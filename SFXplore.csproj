@@ -1,0 +1,15 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>SFXplore</AssemblyName>
+    <Title>SFXplore</Title>
+    <Product>SFXplore</Product>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="Core/**/*.cs;Tests/**/*.cs" />
+    <ProjectReference Include="Core/SoundShelf.Core.csproj" />
+  </ItemGroup>
+</Project>

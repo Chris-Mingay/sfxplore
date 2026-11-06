@@ -1,0 +1,12 @@
+.godot/
+**/bin/
+**/obj/
+.tools/
+tools/ffmpeg/
+dist/
+TestResults/
+*.user
+*.tmp
+artifacts/
+**/__pycache__/
+*.pyc

@@ -1,0 +1,50 @@
+name: Build and verify desktop apps
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            rid: win-x64
+          - runner: ubuntu-22.04
+            rid: linux-x64
+          - runner: macos-15-intel
+            rid: osx-x64
+          - runner: macos-15
+            rid: osx-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.413
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install audio tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install audio tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Install audio tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Build, test, and package
+        run: python scripts/ci_build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SFXplore-${{ matrix.rid }}
+          path: dist/${{ matrix.rid }}/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.rid }}
+          path: Tests/TestResults/*.trx

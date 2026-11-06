@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Desktop targets do not use mobile/WASM workload manifests. -->
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>
