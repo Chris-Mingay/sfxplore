@@ -5,6 +5,80 @@ namespace SoundShelf.App;
 
 public partial class Main
 {
+    private const string LastCopyDirectory = "last_copy_directory";
+    private const string LastExportDirectory = "last_export_directory";
+    private readonly Dictionary<string, string> _saveDirectories = new();
+
+    private FileDialog CreateSaveDialog(string title, string fileName, string setting, string? fallback = null)
+    {
+        var dialog = new FileDialog
+        {
+            FileMode = FileDialog.FileModeEnum.SaveFile, Access = FileDialog.AccessEnum.Filesystem,
+            Title = title, UseNativeDialog = true
+        };
+        AddChild(dialog);
+        string? directory = _saveDirectories.GetValueOrDefault(setting) ?? _catalog.GetSetting(setting);
+        if (directory != null && Directory.Exists(directory)) dialog.CurrentDir = directory;
+        else if (fallback != null && Directory.Exists(fallback)) dialog.CurrentDir = fallback;
+        dialog.CurrentFile = fileName;
+        return dialog;
+    }
+
+    private void ShowSaveDialog(FileDialog dialog, Action<string> selected)
+    {
+        dialog.FileSelected += path =>
+        {
+            dialog.QueueFree();
+            try { selected(path); }
+            catch (Exception e) { Error(e.Message); }
+        };
+        dialog.Canceled += dialog.QueueFree;
+        dialog.PopupCenteredRatio(.7f);
+    }
+
+    private void RememberSaveDirectory(string setting, string path)
+    {
+        string directory = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        _saveDirectories[setting] = directory;
+        EnqueuePersistence(() => _catalog.SetSetting(setting, directory));
+    }
+
+    private void SaveToChosenPath(string chosen, string target, Action<bool> save)
+    {
+        bool exists = File.Exists(target);
+        // If adding or changing an extension changes the path, the picker only checked the original name.
+        if (exists && !string.Equals(Path.GetFullPath(chosen), Path.GetFullPath(target), Paths.Comparison))
+            Confirm("Replace existing file?", "Replace this file?\n\n" + target, () => save(true), "Replace");
+        else save(exists);
+    }
+
+    private void ChooseSoundCopy(Sound sound)
+    {
+        if (_operationBusy) { Error("Wait for the current operation to finish."); return; }
+        if (!File.Exists(sound.FullPath)) { Error("The source sound is unavailable. Rescan the library to refresh its contents."); return; }
+        string extension = Path.GetExtension(sound.FullPath);
+        var dialog = CreateSaveDialog("Copy sound to", Path.GetFileName(sound.FullPath), LastCopyDirectory, Path.GetDirectoryName(sound.FullPath));
+        ShowSaveDialog(dialog, path =>
+        {
+            string target = path.EndsWith(extension, StringComparison.OrdinalIgnoreCase) ? path : path + extension;
+            SaveToChosenPath(path, target, overwrite => _ = Guard(() => CopySound(sound, target, overwrite)));
+        });
+    }
+
+    private async Task CopySound(Sound sound, string destination, bool overwrite)
+    {
+        if (_operationBusy) throw new InvalidOperationException("Wait for the current operation to finish.");
+        var cancellation = BeginOperation();
+        try
+        {
+            Status("Copying " + Path.GetFileName(sound.FullPath) + "…");
+            await SoundFileCopy.CopyAsync(sound.FullPath, destination, overwrite, cancellation);
+            RememberSaveDirectory(LastCopyDirectory, destination);
+            Status("Copied to " + destination);
+        }
+        finally { EndOperation(); }
+    }
+
     private (Window Window, VBoxContainer Body) Dialog(string title, Vector2I size)
     {
         var window = new Window { Title = title, Size = size, MinSize = new(420, 260), Transient = true, Exclusive = true, WrapControls = false };
@@ -90,12 +164,18 @@ public partial class Main
         { var library = _catalog.Libraries().FirstOrDefault(l => l.Id == result.LibraryId); if (library != null) SelectLibrary(library); window.QueueFree(); }));
         actions.AddChild(Skin.Button("Close", window.QueueFree)); Refresh();
     }
-    private void NameDialog(string title, string initial, Action<string> accepted)
+    private void NameDialog(string title, string initial, Action<string> accepted, string fieldLabel = "Mix name")
     {
         var (window, body) = Dialog(title, new(440, 270));
-        body.AddChild(Skin.Label("Mix name", 14, Skin.Muted)); var input = new LineEdit { Text = initial }; body.AddChild(input);
+        body.AddChild(Skin.Label(fieldLabel, 14, Skin.Muted)); var input = new LineEdit { Text = initial }; body.AddChild(input);
         var error = Skin.Label("", 12, new Color("efb08d")); body.AddChild(error);
-        void Accept() { if (input.Text.Trim().Length == 0) { error.Text = "Enter a name."; return; } accepted(input.Text.Trim()); window.QueueFree(); }
+        void Accept()
+        {
+            string name = input.Text.Trim();
+            if (name.Length == 0) { error.Text = "Enter a name."; return; }
+            try { accepted(name); window.QueueFree(); }
+            catch (Exception e) { error.Text = e.Message; }
+        }
         var actions = new HBoxContainer(); body.AddChild(actions); actions.AddChild(Skin.Button("Save", Accept)); actions.AddChild(Skin.Button("Cancel", window.QueueFree)); input.TextSubmitted += _ => Accept(); input.GrabFocus(); input.SelectAll();
     }
 }

@@ -16,10 +16,7 @@ public partial class Main
         var folders = new Tree { Name = "ExportFolders", HideRoot = false, SizeFlagsVertical = SizeFlags.ExpandFill, CustomMinimumSize = new(0, 240) }; body.AddChild(folders);
         var folderPath = Skin.Label("", 12, Skin.Muted); folderPath.Name = "ExportFolderPath"; folderPath.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; body.AddChild(folderPath);
         body.AddChild(Skin.Label(ogg ? "File name · OGG Vorbis" : "File name · 24-bit WAV", 12, Skin.Muted));
-        string suggested = _mix.Name;
-        foreach (char invalid in Path.GetInvalidFileNameChars().Concat(new[] { '/', '\\' }).Distinct()) suggested = suggested.Replace(invalid, '_');
-        if (suggested.Trim() is "" or "." or "..") suggested = "Untitled mix";
-        var fileName = new LineEdit { Name = "ExportFilename", Text = ExportDestination.FileName(suggested, ogg), PlaceholderText = "Export file name" }; body.AddChild(fileName);
+        var fileName = new LineEdit { Name = "ExportFilename", Text = ExportDestination.FileName(SuggestedExportName(_mix.Name), ogg), PlaceholderText = "Export file name" }; body.AddChild(fileName);
         var hint = Skin.Label("", 12, new Color("efb08d")); hint.AutowrapMode = TextServer.AutowrapMode.WordSmart; body.AddChild(hint);
         var actions = new HBoxContainer(); body.AddChild(actions);
         var export = new Button { Name = "ExportToLibrary", Text = "Export to this folder", SizeFlagsHorizontal = SizeFlags.ExpandFill }; actions.AddChild(export);

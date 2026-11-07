@@ -11,11 +11,18 @@ public partial class Main : Control
     private string _data = "";
     private Library? _library;
     private string _folder = "";
-    private int _offset;
     private long? _scanFilter;
     private readonly HashSet<long> _tagFilters = new();
     private List<Tag> _filterTags = new();
-    private int _queryVersion;
+    private const int BrowserBatchSize = 80;
+    private sealed record BrowserQuery(long? LibraryId, string Folder, string Search, long[] Tags, long? ScanId);
+    private sealed record ExplorerLocation(long? LibraryId, string Folder, bool AllLibraries);
+    private sealed record WindowPlacement(int X, int Y, int Width, int Height, int? MaximizedCenterX, int? MaximizedCenterY);
+    private Rect2I _windowedBounds;
+    private Vector2I? _maximizedCenter;
+    private BrowserQuery? _browserQuery;
+    private Task _browserLoad = Task.CompletedTask;
+    private int _browserTotal;
     private int _previewVersion;
     private BrowserTile? _selectedTile;
     private Sound? _contextSound;
@@ -23,13 +30,17 @@ public partial class Main : Control
     private bool _contextIsFolder;
     private Func<string, bool, Godot.Error> _showInFileManager = OS.ShellShowInFileManager;
     private VBoxContainer _libraryList = null!, _gridArea = null!;
+    private VBoxContainer _sidebar = null!;
+    private ScrollContainer _libraryRegion = null!;
+    private VBoxContainer _browserBody = null!;
+    private ScrollContainer _browserScroll = null!;
     private GridContainer _grid = null!;
-    private Label _status = null!, _location = null!, _pageLabel = null!, _previewLabel = null!;
+    private Label _status = null!, _location = null!, _resultsLabel = null!, _previewLabel = null!;
     private LineEdit _search = null!;
     private MenuButton _tagPicker = null!;
     private OptionButton _scope = null!;
-    private Button _previous = null!, _next = null!;
     private Button _browseFolders = null!;
+    private Button _cancelOperation = null!;
     private Button _backButton = null!, _forwardButton = null!;
     private PopupMenu _fileMenu = null!;
     private AudioStreamPlayer _previewPlayer = null!;
@@ -38,11 +49,12 @@ public partial class Main : Control
     private long _previewFrame;
     private int _previewCapacity;
     private CancellationTokenSource? _operation;
+    private string? _lastLibraryPickerDirectory;
     private Godot.Timer _searchTimer = null!;
     private HSplitContainer _outerSplit = null!;
     private VSplitContainer _mainSplit = null!;
     private bool _shuttingDown;
-    private bool _operationBusy;
+    private bool _operationBusy => _operation != null;
     private bool _testMode;
     private readonly Stack<string> _back = new();
     private readonly Stack<string> _forward = new();
@@ -72,56 +84,56 @@ public partial class Main : Control
         AddChild(margin); var root = new VBoxContainer(); margin.AddChild(root);
         var header = new HBoxContainer(); root.AddChild(header);
         header.AddChild(Skin.Label("◈  SFXplore", 20, Skin.Accent));
-        header.AddChild(Skin.Label("  SOUND LIBRARY & MIX WORKSPACE", 11, Skin.Muted));
         header.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
         header.AddChild(Skin.Button("Tags", () => ShowTags(null)));
         header.AddChild(Skin.Button("Mix drawer", () => _mixPanel.Visible = !_mixPanel.Visible));
         header.AddChild(Skin.Button("About", () => Message("SFXplore", "SFXplore · Godot 4.7.2 .NET\n\nBrowse, tag, preview and mix your sound collection.\nYour original files are never modified.\n\nSpace: play/pause mix · Ctrl+Z: undo · Ctrl+Shift+Z: redo\nClick the timeline ruler to seek.\n\nBuilt with Godot, SQLite and FFmpeg. See THIRD_PARTY_NOTICES.md for dependencies.")));
         _outerSplit = new HSplitContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SplitOffsets = new int[] { 255 } }; root.AddChild(_outerSplit);
         var sidebar = new PanelContainer { CustomMinimumSize = new(220, 0) }; _outerSplit.AddChild(sidebar);
-        var side = new VBoxContainer(); sidebar.AddChild(side);
-        side.AddChild(Skin.Label("SOUND LIBRARIES", 12, Skin.Muted));
-        side.AddChild(Skin.Button("+  Add library", AddLibrary));
-        var librariesScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; side.AddChild(librariesScroll);
+        _sidebar = new VBoxContainer(); sidebar.AddChild(_sidebar);
+        _libraryRegion = new ScrollContainer { CustomMinimumSize = new(0, 100), SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, FollowFocus = true }; _sidebar.AddChild(_libraryRegion);
+        var librarySection = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill }; _libraryRegion.AddChild(librarySection);
+        librarySection.AddChild(Skin.Label("SOUND LIBRARIES", 12, Skin.Muted));
+        librarySection.AddChild(Skin.Button("+  Add library", AddLibrary));
+        var librariesScroll = new ScrollContainer { CustomMinimumSize = new(0, 36), SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; librarySection.AddChild(librariesScroll);
         _libraryList = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; librariesScroll.AddChild(_libraryList);
-        side.AddChild(Skin.Button("Rescan selected", () => { if (_library != null) _ = Guard(() => Scan(_library)); }));
-        side.AddChild(Skin.Button("Scan history", ShowScanHistory));
-        side.AddChild(Skin.Button("Remove library", RemoveLibrary));
-        side.AddChild(Skin.Label("WAV  ·  OGG  ·  MP3\nMetadata stays on this computer", 11, Skin.Muted));
+        librarySection.AddChild(Skin.Button("Rescan selected", () => { if (_library != null) _ = Guard(() => Scan(_library)); }));
+        librarySection.AddChild(Skin.Button("Scan history", ShowScanHistory));
+        librarySection.AddChild(Skin.Button("Remove library", RemoveLibrary));
         _mainSplit = new VSplitContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SplitOffsets = new int[] { 480 } }; _outerSplit.AddChild(_mainSplit);
         var browser = new PanelContainer { CustomMinimumSize = new(600, 200) }; _mainSplit.AddChild(browser);
-        var browserBody = new VBoxContainer(); browser.AddChild(browserBody);
-        var searchRow = new HBoxContainer(); browserBody.AddChild(searchRow);
+        _browserBody = new VBoxContainer(); browser.AddChild(_browserBody);
+        var searchRow = new HBoxContainer(); _browserBody.AddChild(searchRow);
         _search = new LineEdit { PlaceholderText = "Search sounds by name or path…", SizeFlagsHorizontal = SizeFlags.ExpandFill, ClearButtonEnabled = true }; searchRow.AddChild(_search);
         _scope = new OptionButton(); _scope.AddItem("Selected library"); _scope.AddItem("All libraries"); searchRow.AddChild(_scope);
         _tagPicker = new MenuButton { Text = "All tags", CustomMinimumSize = new(140, 0), Flat = false, ClipText = true, TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis }; searchRow.AddChild(_tagPicker);
         _tagPicker.GetPopup().HideOnCheckableItemSelection = false;
         _tagPicker.GetPopup().IndexPressed += TagFilterPressed;
         _searchTimer = new Godot.Timer { WaitTime = .2, OneShot = true }; AddChild(_searchTimer);
-        _search.TextChanged += _ => _searchTimer.Start(); _searchTimer.Timeout += () => { _offset = 0; _ = RefreshBrowser(); };
-        _scope.ItemSelected += index => { _offset = 0; _ = RefreshBrowser(); };
-        var nav = new HBoxContainer(); browserBody.AddChild(nav);
-        _backButton = Skin.IconButton("res://Assets/Icons/arrow-left.svg", GoBack, "Back · mouse back button"); nav.AddChild(_backButton);
+        _search.TextChanged += _ => _searchTimer.Start(); _searchTimer.Timeout += () => _ = RefreshBrowser();
+        _scope.ItemSelected += index => { SaveExplorerLocation(); _ = RefreshBrowser(); };
+        searchRow.AddChild(Skin.Button("Clear filters", () => { _search.Text = ""; _searchTimer.Stop(); _tagFilters.Clear(); UpdateTagPicker(); _scanFilter = null; _ = RefreshBrowser(); }));
+        var nav = new HBoxContainer(); _browserBody.AddChild(nav);
+        _backButton = Skin.IconButton("res://Assets/Icons/arrow-left.svg", GoBack, "Back · Backspace · mouse back button"); nav.AddChild(_backButton);
         _forwardButton = Skin.IconButton("res://Assets/Icons/arrow-right.svg", GoForward, "Forward · mouse forward button"); nav.AddChild(_forwardButton);
         nav.AddChild(Skin.IconButton("res://Assets/Icons/arrow-up.svg", GoUp, "Parent folder"));
         _location = Skin.Label("All libraries", 13, Skin.Muted); _location.SizeFlagsHorizontal = SizeFlags.ExpandFill; _location.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; nav.AddChild(_location);
         _browseFolders = Skin.Button("Browse folders", () => { if (_library != null) SelectLibrary(_library); }, "Return to this library's root folder and clear result filters"); nav.AddChild(_browseFolders);
-        nav.AddChild(Skin.Button("Clear filters", () => { _search.Text = ""; _tagFilters.Clear(); UpdateTagPicker(); _scanFilter = null; _offset = 0; _ = RefreshBrowser(); }));
-        var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled }; browserBody.AddChild(scroll);
-        _gridArea = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; scroll.AddChild(_gridArea);
+        _browserScroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, FocusMode = FocusModeEnum.All, FollowFocus = true, AccessibilityName = "Explorer results" }; _browserBody.AddChild(_browserScroll);
+        _gridArea = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill }; _browserScroll.AddChild(_gridArea);
         _grid = new GridContainer { Columns = 4, SizeFlagsHorizontal = SizeFlags.ExpandFill }; _grid.AddThemeConstantOverride("h_separation", 10); _grid.AddThemeConstantOverride("v_separation", 10); _gridArea.AddChild(_grid);
-        scroll.Resized += () => { _grid.Columns = Math.Max(1, (int)(scroll.Size.X / 190)); };
-        var paging = new HBoxContainer(); browserBody.AddChild(paging);
-        _previous = Skin.Button("Previous", () => { _offset = Math.Max(0, _offset - 80); _ = RefreshBrowser(); }); paging.AddChild(_previous);
-        _pageLabel = Skin.Label(""); _pageLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill; _pageLabel.HorizontalAlignment = HorizontalAlignment.Center; paging.AddChild(_pageLabel);
-        _next = Skin.Button("Next", () => { _offset += 80; _ = RefreshBrowser(); }); paging.AddChild(_next);
-        var preview = new HBoxContainer(); browserBody.AddChild(preview);
+        _browserScroll.Resized += () => { _grid.Columns = Math.Max(1, (int)(_browserScroll.Size.X / 190)); };
+        var preview = new HBoxContainer(); _browserBody.AddChild(preview);
         preview.AddChild(Skin.Button("■", StopPreview, "Stop sound preview"));
         _previewLabel = Skin.Label("Select a sound to preview", 12, Skin.Muted); _previewLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill; _previewLabel.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; preview.AddChild(_previewLabel);
+        _resultsLabel = Skin.Label("", 12, Skin.Muted); preview.AddChild(_resultsLabel);
         _previewPlayer = new AudioStreamPlayer(); AddChild(_previewPlayer);
         BuildMixer();
+        BuildMixWorkspace();
         var status = new HBoxContainer(); root.AddChild(status); _status = Skin.Label("Ready · Add a folder to begin", 12, Skin.Muted); _status.SizeFlagsHorizontal = SizeFlags.ExpandFill; _status.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; status.AddChild(_status);
-        status.AddChild(Skin.Button("Cancel operation", () => _operation?.Cancel()));
+        _cancelOperation = Skin.Button("Cancel operation", CancelOperation);
+        _cancelOperation.Hide();
+        status.AddChild(_cancelOperation);
         _fileMenu = new PopupMenu(); AddChild(_fileMenu);
         _fileMenu.IdPressed += id =>
         {
@@ -129,12 +141,13 @@ public partial class Main : Control
             if (_contextSound == null) return;
             if (id == 0) ShowTags(_contextSound);
             else if (id == 1) _ = Guard(() => AddToMix(_contextSound));
+            else if (id == 3) ChooseSoundCopy(_contextSound);
         };
     }
     private void LoadLibraries()
     {
         Skin.Clear(_libraryList);
-        var all = Skin.Button("▦  All sounds", () => { _library = null; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _offset = 0; _scope.Select(1); _ = RefreshBrowser(); }); _libraryList.AddChild(all);
+        var all = Skin.Button("▦  All sounds", () => { _library = null; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _scope.Select(1); SaveExplorerLocation(); _browserScroll.GrabFocus(); _ = RefreshBrowser(); }); _libraryList.AddChild(all);
         foreach (var library in _catalog.Libraries())
         {
             var b = Skin.Button("▣  " + library.Name, () => SelectLibrary(library), library.Path); b.Alignment = HorizontalAlignment.Left;
@@ -143,9 +156,10 @@ public partial class Main : Control
     }
     private void SelectLibrary(Library library)
     {
-        _library = library; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _offset = 0; _scope.Select(0);
+        _library = library; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _scope.Select(0);
+        if (GetViewport().GuiGetFocusOwner() is { } focus && (_libraryList.IsAncestorOf(focus) || focus == _browseFolders)) _browserScroll.GrabFocus();
         _search.Text = ""; _searchTimer.Stop(); _tagFilters.Clear(); UpdateTagPicker();
-        EnqueuePersistence(() => { _catalog.SetSetting("library", library.Id.ToString()); _catalog.SetSetting("folder", ""); }); LoadLibraries(); _ = RefreshBrowser();
+        SaveExplorerLocation(); LoadLibraries(); _ = RefreshBrowser();
     }
     private void BrowseNewSounds(ScanResult result)
     {
@@ -156,7 +170,7 @@ public partial class Main : Control
     private void LoadTags()
     {
         _filterTags = _catalog.Tags(); var valid = _filterTags.Select(t => t.Id).ToHashSet();
-        if (_tagFilters.RemoveWhere(id => !valid.Contains(id)) > 0) _offset = 0;
+        _tagFilters.RemoveWhere(id => !valid.Contains(id));
         var popup = _tagPicker.GetPopup(); popup.Clear(); popup.AddItem("Clear tag filters"); popup.AddSeparator();
         foreach (var tag in _filterTags) { popup.AddCheckItem(tag.Name); popup.SetItemMetadata(popup.ItemCount - 1, tag.Id); }
         UpdateTagPicker();
@@ -167,7 +181,7 @@ public partial class Main : Control
         if (index == 0) _tagFilters.Clear();
         else if (index >= 2 && index < popup.ItemCount) { long id = (long)popup.GetItemMetadata((int)index); if (!_tagFilters.Add(id)) _tagFilters.Remove(id); }
         else return;
-        UpdateTagPicker(); _offset = 0; _ = RefreshBrowser();
+        UpdateTagPicker(); _ = RefreshBrowser();
     }
     private void UpdateTagPicker()
     {
@@ -178,51 +192,136 @@ public partial class Main : Control
         _tagPicker.Text = selected.Count == 0 ? "All tags" : selected.Count == 1 ? selected[0].Name : $"Tags ({selected.Count})";
         _tagPicker.TooltipText = "Select multiple tags. Sounds must have all selected tags." + (selected.Count > 0 ? "\n\n" + string.Join("\n", selected.Select(t => t.Name)) : "");
     }
-    private async Task RefreshBrowser()
+    private Task RefreshBrowser()
     {
         _backButton.Disabled = _library == null || (!ShowingLibraryResults && _back.Count == 0 && _folder.Length == 0);
         _forwardButton.Disabled = _library == null || ShowingLibraryResults || _forward.Count == 0;
-        int version = ++_queryVersion; long? libraryId = _scope.Selected == 1 ? null : _library?.Id; string folder = _folder, search = _search.Text.Trim(); var tags = _tagFilters.ToArray(); int offset = _offset; var scan = _scanFilter;
+        var query = new BrowserQuery(_scope.Selected == 1 ? null : _library?.Id, _folder, _search.Text.Trim(), _tagFilters.ToArray(), _scanFilter);
+        _browserQuery = query;
+        _browserTotal = 0;
+        if (GetViewport().GuiGetFocusOwner() is BrowserTile) _browserScroll.GrabFocus();
+        _selectedTile = null;
+        Skin.Clear(_grid);
+        foreach (var child in _gridArea.GetChildren().Skip(1)) { _gridArea.RemoveChild(child); child.QueueFree(); }
+        _browserScroll.ScrollVertical = 0;
+        _resultsLabel.Text = "Loading…";
+        bool filtered = query.Search.Length > 0 || query.Tags.Length > 0;
+        bool flatResults = query.ScanId.HasValue || filtered || !query.LibraryId.HasValue;
+        _browseFolders.Visible = _library != null && flatResults;
+        string mode = query.ScanId.HasValue ? "  ·  Newly added sounds (flat results)" : filtered ? "  ·  Filtered sound results" : "";
+        _location.Text = (query.LibraryId.HasValue ? _library?.Name + (!flatResults && query.Folder.Length > 0 ? "  /  " + query.Folder.Replace("/", "  /  ") : "") : "All libraries") + mode;
+        return _browserLoad = LoadBrowserBatch(query, 0);
+    }
+
+    private async Task LoadBrowserBatch(BrowserQuery query, int offset)
+    {
         try
         {
-            var result = await Task.Run(() => _catalog.Browse(libraryId, folder, search, tags, offset, scanId: scan));
-            if (_shuttingDown || version != _queryVersion) return;
-            Skin.Clear(_grid); _selectedTile = null;
+            var result = await Task.Run(() => _catalog.Browse(query.LibraryId, query.Folder, query.Search, query.Tags, offset, BrowserBatchSize, query.ScanId));
+            if (_shuttingDown || !ReferenceEquals(query, _browserQuery)) return;
             foreach (var entry in result.Entries)
             {
                 var tile = new BrowserTile { Entry = entry, SizeFlagsHorizontal = SizeFlags.ExpandFill }; tile.Clicked += TileClicked; _grid.AddChild(tile);
             }
-            foreach (var child in _gridArea.GetChildren().Skip(1).ToArray()) { _gridArea.RemoveChild(child); child.QueueFree(); }
-            if (result.Entries.Count == 0)
+            _browserTotal = result.Total;
+            int loaded = _grid.GetChildCount();
+            if (loaded == 0)
             {
                 var empty = Skin.Label(_catalog.Libraries().Count == 0 ? "Your sound collection, organized.\n\nAdd a library folder from the left to scan your WAV, OGG and MP3 files." : "No indexed sounds here.\n\nScan this library, open another folder, or adjust your filters.", 17, Skin.Muted); empty.CustomMinimumSize = new(0, 180); empty.HorizontalAlignment = HorizontalAlignment.Center; _gridArea.AddChild(empty);
             }
-            bool flatResults = scan.HasValue || search.Length > 0 || tags.Length > 0 || !libraryId.HasValue;
-            _browseFolders.Visible = _library != null && flatResults;
-            string mode = scan.HasValue ? "  ·  Newly added sounds (flat results)" : search.Length > 0 || tags.Length > 0 ? "  ·  Filtered sound results" : "";
-            _location.Text = (libraryId.HasValue ? _library?.Name + (!flatResults && folder.Length > 0 ? "  /  " + folder.Replace("/", "  /  ") : "") : "All libraries") + mode;
-            _previous.Disabled = offset == 0; _next.Disabled = offset + 80 >= result.Total;
-            _pageLabel.Text = result.Total == 0 ? "0 items" : $"{offset + 1}–{Math.Min(offset + 80, result.Total)} of {result.Total:N0} items";
+            // The scrollbar and new tiles need their layout before another load or keyboard move.
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            if (_shuttingDown || !ReferenceEquals(query, _browserQuery)) return;
+            if (result.Entries.Count == 0) _browserTotal = loaded;
+            _resultsLabel.Text = loaded < _browserTotal ? $"{loaded:N0} of {_browserTotal:N0} items loaded" : $"{loaded:N0} items";
         }
-        catch (Exception e) { if (version == _queryVersion) Error(e.Message); }
+        catch (Exception e)
+        {
+            if (_shuttingDown || !ReferenceEquals(query, _browserQuery)) return;
+            _browserTotal = _grid.GetChildCount();
+            _resultsLabel.Text = "Could not load items";
+            Error(e.Message);
+        }
     }
+
+    private Task LoadMoreBrowserItems()
+    {
+        if (!_browserLoad.IsCompleted || _browserQuery == null) return _browserLoad;
+        int loaded = _grid.GetChildCount();
+        if (loaded >= _browserTotal) return Task.CompletedTask;
+        _resultsLabel.Text = "Loading more…";
+        return _browserLoad = LoadBrowserBatch(_browserQuery, loaded);
+    }
+
+    private void CheckBrowserScroll()
+    {
+        if (!_browserLoad.IsCompleted || _grid.GetChildCount() >= _browserTotal || !_searchTimer.IsStopped()) return;
+        var scrollbar = _browserScroll.GetVScrollBar();
+        if (scrollbar.MaxValue - scrollbar.Page - scrollbar.Value <= scrollbar.Page) _ = LoadMoreBrowserItems();
+    }
+
+    private void SelectBrowserTile(BrowserTile tile)
+    {
+        if (_selectedTile == tile) return;
+        if (_selectedTile != null) { _selectedTile.Selected = false; _selectedTile.QueueRedraw(); }
+        _selectedTile = tile;
+        tile.Selected = true;
+        tile.QueueRedraw();
+    }
+
+    private void ActivateBrowserTile(BrowserTile tile)
+    {
+        if (tile.Entry.IsFolder) Navigate(tile.Entry.RelativePath);
+        else _ = Guard(() => Preview(tile.Entry.Sound!));
+    }
+
+    private async Task MoveBrowserSelection(Key key, Control? focus)
+    {
+        int count = _grid.GetChildCount();
+        if (count == 0) return;
+        var current = focus as BrowserTile ?? _selectedTile;
+        int columns = _grid.Columns;
+        int index = current?.GetIndex() ?? -1;
+        int target = index < 0 ? 0 : index + (key switch
+        {
+            Key.Left => -1,
+            Key.Right => 1,
+            Key.Up => -columns,
+            _ => columns
+        });
+        if (target < 0) return;
+        if (target >= count && count < _browserTotal)
+        {
+            var query = _browserQuery;
+            var selection = _selectedTile;
+            await LoadMoreBrowserItems();
+            if (_shuttingDown || !ReferenceEquals(query, _browserQuery) || _selectedTile != selection || GetViewport().GuiGetFocusOwner() != focus) return;
+            count = _grid.GetChildCount();
+        }
+        if (key == Key.Down && index >= 0 && target >= count && target / columns == (count - 1) / columns) target = count - 1;
+        if (target >= count) return;
+        var tile = _grid.GetChild<BrowserTile>(target);
+        if (tile == current) return;
+        SelectBrowserTile(tile);
+        tile.GrabFocus();
+        if (tile.Entry.Sound is { } sound) _ = Guard(() => Preview(sound));
+    }
+
     private void TileClicked(BrowserTile tile, bool right)
     {
-        if (_selectedTile != null && IsInstanceValid(_selectedTile)) { _selectedTile.Selected = false; _selectedTile.QueueRedraw(); }
-        _selectedTile = tile; tile.Selected = true; tile.QueueRedraw();
+        SelectBrowserTile(tile);
         if (right)
         {
             _contextIsFolder = tile.Entry.IsFolder; _contextSound = tile.Entry.Sound;
             _contextLocation = _contextIsFolder && _library != null ? Paths.Join(_library.Path, tile.Entry.RelativePath) : _contextSound?.FullPath;
             if (_contextLocation == null) return;
             _fileMenu.Clear();
-            if (!_contextIsFolder) { _fileMenu.AddItem("Manage tags…", 0); _fileMenu.AddItem("Add to mix", 1); _fileMenu.AddSeparator(); }
+            if (!_contextIsFolder) { _fileMenu.AddItem("Manage tags…", 0); _fileMenu.AddItem("Add to mix", 1); _fileMenu.AddItem("Copy to…", 3); _fileMenu.AddSeparator(); }
             _fileMenu.AddItem(_contextIsFolder ? "Open folder location" : "Open file location", 2);
             _fileMenu.Position = (Vector2I)GetScreenPosition() + (Vector2I)GetGlobalMousePosition(); _fileMenu.Popup();
             return;
         }
-        if (tile.Entry.IsFolder) Navigate(tile.Entry.RelativePath);
-        else _ = Guard(() => Preview(tile.Entry.Sound!));
+        ActivateBrowserTile(tile);
     }
     private void OpenContextLocation()
     {
@@ -238,7 +337,13 @@ public partial class Main : Control
         _back.Push(_folder); _forward.Clear(); OpenHistoryFolder(folder);
     }
     private void OpenHistoryFolder(string folder)
-    { _folder = folder; _offset = 0; _scanFilter = null; EnqueuePersistence(() => _catalog.SetSetting("folder", folder)); _ = RefreshBrowser(); }
+    {
+        _folder = folder;
+        _scanFilter = null;
+        if (GetViewport().GuiGetFocusOwner() is Button focus && _browserBody.IsAncestorOf(focus)) _browserScroll.GrabFocus();
+        SaveExplorerLocation();
+        _ = RefreshBrowser();
+    }
     private bool ShowingLibraryResults => _library != null && (_scanFilter.HasValue || _tagFilters.Count > 0 || _search.Text.Trim().Length > 0 || _scope.Selected == 1);
     private void GoBack()
     {
@@ -256,36 +361,68 @@ public partial class Main : Control
     private void AddLibrary()
     {
         var dialog = new FileDialog { FileMode = FileDialog.FileModeEnum.OpenDir, Access = FileDialog.AccessEnum.Filesystem, Title = "Choose a sound library folder", UseNativeDialog = true };
-        AddChild(dialog); dialog.DirSelected += path =>
+        AddChild(dialog);
+        if (_lastLibraryPickerDirectory is { } directory && Directory.Exists(directory)) dialog.CurrentDir = directory;
+        dialog.DirSelected += path =>
         {
-            try { var library = _catalog.AddLibrary(path); SelectLibrary(library); Confirm("Scan library?", "Recursively scan this folder and all its subfolders for WAV, OGG and MP3 sounds?\n\n" + library.Path, () => _ = Guard(() => Scan(library)), "Scan now", "Later"); }
+            try
+            {
+                var library = _catalog.AddLibrary(path);
+                _lastLibraryPickerDirectory = path;
+                EnqueuePersistence(() => _catalog.SetSetting("last_library_picker_directory", path));
+                SelectLibrary(library);
+                Confirm("Scan library?", "Recursively scan this folder and all its subfolders for WAV, OGG and MP3 sounds?\n\n" + library.Path, () => _ = Guard(() => Scan(library)), "Scan now", "Later");
+            }
             catch (Exception e) { Error(e.Message); } finally { dialog.QueueFree(); }
         }; dialog.Canceled += dialog.QueueFree; dialog.PopupCenteredRatio(.7f);
     }
     private void RemoveLibrary()
     {
         if (_library == null) return; var library = _library;
-        Confirm("Remove library", $"Remove ‘{library.Name}’ from the catalog?\n\nOriginal files and saved mix source references are retained.", () => { _catalog.RemoveLibrary(library.Id); _library = null; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _offset = 0; LoadLibraries(); _ = RefreshBrowser(); }, "Remove");
+        Confirm("Remove library", $"Remove ‘{library.Name}’ from the catalog?\n\nOriginal files and saved mix source references are retained.", () => { _catalog.RemoveLibrary(library.Id); _library = null; _folder = ""; _back.Clear(); _forward.Clear(); _scanFilter = null; _scope.Select(1); SaveExplorerLocation(); LoadLibraries(); _ = RefreshBrowser(); }, "Remove");
     }
     private async Task Scan(Library library)
     {
         if (_operationBusy) throw new InvalidOperationException("Wait for the current scan or export to finish.");
-        _operationBusy = true; _operation = new();
+        var cancellation = BeginOperation();
         try
         {
             Status("Scanning " + library.Name + "…");
             var progress = new Progress<ScanProgress>(p => Status($"Scanning · {p.Files:N0} sounds · {p.Path}"));
-            var result = await _catalog.ScanAsync(library, progress, _operation.Token);
+            var result = await _catalog.ScanAsync(library, progress, cancellation);
             SelectLibrary(library); ShowScanResult(result);
             Status($"Scan complete · {result.Added:N0} added · {result.Removed:N0} removed · {result.Changed:N0} changed");
         }
-        finally { _operationBusy = false; _operation.Dispose(); _operation = null; }
+        finally { EndOperation(); }
+    }
+
+    private CancellationToken BeginOperation()
+    {
+        _operation = new CancellationTokenSource();
+        _cancelOperation.Show();
+        return _operation.Token;
+    }
+
+    private void CancelOperation()
+    {
+        _cancelOperation.Hide();
+        _operation?.Cancel();
+    }
+
+    private void EndOperation()
+    {
+        _operation?.Dispose();
+        _operation = null;
+        _cancelOperation.Hide();
     }
     private async Task Preview(Sound sound)
     {
         if (_audio == null) throw new InvalidOperationException("Audio tools are unavailable. Run setup first.");
         StopPreview(); StopMix(false); int version = _previewVersion; _previewLabel.Text = "Loading " + Path.GetFileName(sound.FullPath) + "…";
-        var source = await _audio.LoadAsync(sound.FullPath); if (version != _previewVersion || _shuttingDown) return;
+        PcmSource source;
+        try { source = await _audio.LoadAsync(sound.FullPath); }
+        catch (Exception) when (version != _previewVersion || _shuttingDown) { return; }
+        if (version != _previewVersion || _shuttingDown) return;
         _previewSource = source; _previewFrame = 0;
         _previewPlayer.Stream = new AudioStreamGenerator { MixRate = 48000, BufferLength = .1f }; _previewPlayer.Play(); _previewPlayback = (AudioStreamGeneratorPlayback)_previewPlayer.GetStreamPlayback(); _previewCapacity = _previewPlayback.GetFramesAvailable();
         _previewLabel.Text = $"▶  {Path.GetFileName(sound.FullPath)}  ·  {source.Duration:0.00}s";
@@ -317,22 +454,117 @@ public partial class Main : Control
     }
     private void RestoreLayout()
     {
-        if (long.TryParse(_catalog.GetSetting("library"), out long id)) _library = _catalog.Libraries().FirstOrDefault(l => l.Id == id);
-        _folder = _catalog.GetSetting("folder") ?? ""; LoadLibraries();
+        ExplorerLocation? location = null;
+        if (_catalog.GetSetting("explorer_location") is { } savedLocation)
+        {
+            try { location = JsonSerializer.Deserialize<ExplorerLocation>(savedLocation); }
+            catch (JsonException) { /* Use the legacy settings if the saved location is unreadable. */ }
+        }
+        if (location == null && long.TryParse(_catalog.GetSetting("library"), out long legacyId))
+            location = new(legacyId, _catalog.GetSetting("folder") ?? "", false);
+        if (location?.LibraryId is long id) _library = _catalog.Libraries().FirstOrDefault(l => l.Id == id);
+        _folder = _library == null ? "" : location?.Folder ?? "";
+        _scope.Select(_library == null || location?.AllLibraries == true ? 1 : 0);
+        _lastLibraryPickerDirectory = _catalog.GetSetting("last_library_picker_directory");
+        LoadLibraries();
         if (int.TryParse(_catalog.GetSetting("sidebar_width"), out int sw)) _outerSplit.SplitOffsets = new int[] { sw };
         if (int.TryParse(_catalog.GetSetting("browser_height"), out int bh)) _mainSplit.SplitOffsets = new int[] { bh };
-        if (!_testMode && int.TryParse(_catalog.GetSetting("window_width"), out int w) && int.TryParse(_catalog.GetSetting("window_height"), out int h)) GetWindow().Size = new(Math.Clamp(w, 1180, 3840), Math.Clamp(h, 720, 2160));
-        if (_catalog.GetSetting("mix_visible") == "false") _mixPanel.Hide();
+        if (!_testMode) RestoreWindowPlacement();
+        if (bool.TryParse(_catalog.GetSetting("mix_visible"), out bool mixVisible)) _mixPanel.Visible = mixVisible;
+    }
+    private void SaveExplorerLocation()
+    {
+        string location = JsonSerializer.Serialize(new ExplorerLocation(_library?.Id, _folder, _scope.Selected == 1));
+        EnqueuePersistence(() => _catalog.SetSetting("explorer_location", location));
     }
     private void SaveLayout()
     {
         if (_testMode) return;
         _catalog.SetSetting("sidebar_width", _outerSplit.SplitOffsets[0].ToString()); _catalog.SetSetting("browser_height", _mainSplit.SplitOffsets[0].ToString());
-        _catalog.SetSetting("window_width", GetWindow().Size.X.ToString()); _catalog.SetSetting("window_height", GetWindow().Size.Y.ToString()); _catalog.SetSetting("mix_visible", _mixPanel.Visible ? "true" : "false");
+        CaptureWindowPlacement();
+        if (_windowedBounds.HasArea())
+        {
+            var placement = new WindowPlacement(_windowedBounds.Position.X, _windowedBounds.Position.Y,
+                _windowedBounds.Size.X, _windowedBounds.Size.Y, _maximizedCenter?.X, _maximizedCenter?.Y);
+            _catalog.SetSetting("window_placement", JsonSerializer.Serialize(placement));
+        }
+        _catalog.SetSetting("mix_visible", _mixPanel.Visible ? "true" : "false");
     }
-    public override void _Process(double delta) { FillPreview(); FillMix(); if (_saveErrors.TryDequeue(out string? error)) Error("Could not save application data: " + error); }
+
+    private void CaptureWindowPlacement()
+    {
+        var window = GetWindow();
+        // Maximizing or minimizing must leave the last normal bounds available for Restore Down.
+        switch (window.Mode)
+        {
+            case Window.ModeEnum.Windowed:
+                _windowedBounds = new(window.Position, window.Size);
+                _maximizedCenter = null;
+                break;
+            case Window.ModeEnum.Maximized:
+                _maximizedCenter = window.Position + window.Size / 2;
+                break;
+        }
+    }
+
+    private void RestoreWindowPlacement()
+    {
+        var window = GetWindow();
+        WindowPlacement? saved = null;
+        if (_catalog.GetSetting("window_placement") is { } json)
+        {
+            try { saved = JsonSerializer.Deserialize<WindowPlacement>(json); }
+            catch (JsonException) { /* Fall back to the size from older versions. */ }
+        }
+        if (saved is not { Width: > 0, Height: > 0 })
+        {
+            if (int.TryParse(_catalog.GetSetting("window_width"), out int width) && int.TryParse(_catalog.GetSetting("window_height"), out int height))
+                window.Size = new(Math.Clamp(width, 1180, 3840), Math.Clamp(height, 720, 2160));
+            CaptureWindowPlacement();
+            return;
+        }
+
+        var bounds = new Rect2I(saved.X, saved.Y, saved.Width, saved.Height);
+        int normalScreen = DisplayServer.GetScreenFromRect((Rect2)bounds);
+        bool maximized = saved.MaximizedCenterX.HasValue && saved.MaximizedCenterY.HasValue;
+        int maximizedScreen = maximized
+            ? DisplayServer.GetScreenFromRect(new Rect2(saved.MaximizedCenterX!.Value, saved.MaximizedCenterY!.Value, 1, 1))
+            : (int)DisplayServer.InvalidScreen;
+        if (maximizedScreen >= 0 && normalScreen >= 0 && maximizedScreen != normalScreen)
+            bounds.Position += DisplayServer.ScreenGetPosition(maximizedScreen) - DisplayServer.ScreenGetPosition(normalScreen);
+
+        int screen = maximizedScreen >= 0 ? maximizedScreen : normalScreen >= 0 ? normalScreen : DisplayServer.GetPrimaryScreen();
+        var workArea = DisplayServer.ScreenGetUsableRect(screen);
+        var frameOffset = window.Position - window.GetPositionWithDecorations();
+        // Keep the saved bounds when enough of the title bar remains reachable.
+        var titleBar = new Rect2I(bounds.Position - new Vector2I(0, frameOffset.Y), new(bounds.Size.X, Math.Max(1, frameOffset.Y)));
+        bool titleVisible = Enumerable.Range(0, DisplayServer.GetScreenCount()).Any(index =>
+            DisplayServer.ScreenGetUsableRect(index).Intersection(titleBar).Size.X >= 64);
+        if (workArea.HasArea() && (!titleVisible || (maximizedScreen >= 0 && normalScreen < 0)))
+        {
+            var frameSize = window.GetSizeWithDecorations() - window.Size;
+            var available = (workArea.Size - frameSize).Max(window.MinSize);
+            bounds.Size = bounds.Size.Clamp(window.MinSize, available);
+            bounds.Position = workArea.Position + frameOffset + ((workArea.Size - bounds.Size - frameSize) / 2).Max(Vector2I.Zero);
+        }
+
+        window.Mode = Window.ModeEnum.Windowed;
+        window.InitialPosition = Window.WindowInitialPosition.Absolute;
+        window.Size = bounds.Size;
+        window.Position = bounds.Position;
+        CaptureWindowPlacement();
+        if (maximized) window.Mode = Window.ModeEnum.Maximized;
+    }
+
+    public override void _Process(double delta)
+    {
+        if (!_testMode) CaptureWindowPlacement();
+        CheckBrowserScroll(); FillPreview(); FillMix();
+        if (_saveErrors.TryDequeue(out string? error)) Error("Could not save application data: " + error);
+    }
     public override void _Input(InputEvent @event)
     {
+        if (@event is InputEventKey key) { HandleBrowserKey(key); return; }
         if (@event is not InputEventMouseButton { Pressed: true } mouse) return;
         if (HandleMixerWheel(mouse)) { GetViewport().SetInputAsHandled(); return; }
         if (_library == null) return;
@@ -341,6 +573,34 @@ public partial class Main : Control
         else return;
         GetViewport().SetInputAsHandled();
     }
+
+    private void HandleBrowserKey(InputEventKey key)
+    {
+        if (!key.Pressed || key.CtrlPressed || key.AltPressed || key.MetaPressed) return;
+        bool arrow = key.Keycode is Key.Left or Key.Right or Key.Up or Key.Down;
+        bool activate = key.Keycode is Key.Enter or Key.KpEnter;
+        bool back = key.Keycode == Key.Backspace;
+        if (!arrow && !activate && !back) return;
+        var viewport = GetViewport();
+        var focus = viewport.GuiGetFocusOwner();
+        if (focus is LineEdit or TextEdit) return;
+        Control keyArea = back ? _browserBody : _browserScroll;
+        if (focus != null && focus != _browserScroll && !keyArea.IsAncestorOf(focus)) return;
+        if (_tagPicker.GetPopup().Visible || _scope.GetPopup().Visible || GetChildren().OfType<Window>().Any(window => window.Visible)) return;
+
+        viewport.SetInputAsHandled();
+        if (arrow) _ = MoveBrowserSelection(key.Keycode, focus);
+        else if (!key.Echo)
+        {
+            if (back) GoBack();
+            else if ((focus as BrowserTile ?? _selectedTile) is { } tile)
+            {
+                SelectBrowserTile(tile);
+                ActivateBrowserTile(tile);
+            }
+        }
+    }
+
     public override void _UnhandledKeyInput(InputEvent @event)
     {
         if (@event is not InputEventKey { Pressed: true, Echo: false } key) return;
@@ -351,7 +611,7 @@ public partial class Main : Control
     public override void _Notification(int what)
     {
         if (what != NotificationWMCloseRequest) return;
-        if (_operationBusy) { Confirm("Operation in progress", "Cancel the operation and close SFXplore?", () => { _operation?.Cancel(); _ = CloseWhenReady(); }, "Cancel and close"); return; }
+        if (_operationBusy) { Confirm("Operation in progress", "Cancel the operation and close SFXplore?", () => { CancelOperation(); _ = CloseWhenReady(); }, "Cancel and close"); return; }
         CloseApplication();
     }
     private async Task CloseWhenReady() { while (_operationBusy) await ToSignal(GetTree().CreateTimer(.05), SceneTreeTimer.SignalName.Timeout); CloseApplication(); }
@@ -415,10 +675,12 @@ public partial class Main : Control
     private async Task ExerciseMixerZoom()
     {
         bool visible = _mixPanel.Visible; _mixPanel.Show();
+        var splitOffsets = _mainSplit.SplitOffsets;
+        _mainSplit.SplitOffsets = new[] { 480 };
         async Task Layout() { await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); }
-        async Task Wheel(Vector2 position, MouseButton button, bool shift = false)
+        async Task Wheel(Vector2 position, MouseButton button, bool ctrl = true)
         {
-            using var mouse = new InputEventMouseButton { Position = position, ButtonIndex = button, Pressed = true, Factor = 1, ShiftPressed = shift };
+            using var mouse = new InputEventMouseButton { Position = position, ButtonIndex = button, Pressed = true, Factor = 1, CtrlPressed = ctrl };
             Input.ParseInputEvent(mouse); await Layout();
         }
         await Layout(); double initial = _pixelsPerSecond;
@@ -431,10 +693,14 @@ public partial class Main : Control
         if (_pixelsPerSecond <= initial || Math.Abs(after - before) > 1.5 / _pixelsPerSecond || Math.Abs(_zoomSlider.Value - _pixelsPerSecond) > .001) throw new InvalidOperationException("Wheel up must zoom in around the pointer and synchronize the slider.");
         await Wheel(point, MouseButton.WheelDown);
         if (Math.Abs(_pixelsPerSecond - initial) > .001) throw new InvalidOperationException("Wheel down must zoom out.");
-        await Wheel(_trackControls.GetGlobalRect().Position + new Vector2(70, 70), MouseButton.WheelUp);
+        var controlsPoint = _tracksScroll.GetGlobalRect().Position + new Vector2(70, 70);
+        await Wheel(controlsPoint, MouseButton.WheelUp);
         if (_pixelsPerSecond <= initial) throw new InvalidOperationException("Wheel over track controls must zoom the mixer too.");
-        double zoom = _pixelsPerSecond; await Wheel(point, MouseButton.WheelDown, true);
-        if (_pixelsPerSecond != zoom) throw new InvalidOperationException("Shift + wheel must scroll tracks without zooming.");
+        double zoom = _pixelsPerSecond; _tracksScroll.ScrollVertical = 0;
+        await Wheel(point, MouseButton.WheelDown, ctrl: false);
+        if (_pixelsPerSecond != zoom || _tracksScroll.ScrollVertical <= 0) throw new InvalidOperationException("Mouse wheel must scroll tracks down without zooming.");
+        await Wheel(controlsPoint, MouseButton.WheelUp, ctrl: false);
+        if (_pixelsPerSecond != zoom || _tracksScroll.ScrollVertical != 0) throw new InvalidOperationException("Mouse wheel over track controls must scroll tracks up without zooming.");
         await Wheel(_gridArea.GetGlobalRect().Position + new Vector2(20, 20), MouseButton.WheelUp);
         if (_pixelsPerSecond != zoom) throw new InvalidOperationException("Wheel outside the mixer must not change its zoom.");
         SetTimelineZoom(300); await Layout(); await Wheel(point, MouseButton.WheelUp);
@@ -453,7 +719,8 @@ public partial class Main : Control
         SetTimelineZoom(10); await Layout(); await Wheel(point, MouseButton.WheelDown);
         if (_pixelsPerSecond != 10) throw new InvalidOperationException("Mixer zoom must respect its lower limit.");
         SetTimelineZoom(initial); await Layout(); _timelineScroll.ScrollHorizontal = 0; _mixPanel.Visible = visible;
-        GD.Print("SOUNDSHELF_ZOOM_OK wheel-in wheel-out pointer-anchor slider-sync track-controls shift-scroll browser-isolation limits pinned-scrollbar");
+        _mainSplit.SplitOffsets = splitOffsets;
+        GD.Print("SOUNDSHELF_ZOOM_OK ctrl-wheel-in ctrl-wheel-out pointer-anchor slider-sync track-controls wheel-scroll browser-isolation limits pinned-scrollbar");
     }
     private async Task ExerciseFolderNavigation()
     {
@@ -541,13 +808,41 @@ public partial class Main : Control
         lane._GuiInput(new InputEventMouseMotion { Position = new(edge + 10, lane.Size.Y - 22) });
         lane._GuiInput(new InputEventMouseButton { Position = new(edge + 10, lane.Size.Y - 22), ButtonIndex = MouseButton.Left, Pressed = false });
         Check(_mix.Tracks[0].TrimStart > original.Tracks[0].TrimStart, "left trim handle"); RestoreHistory(false);
+        _mixPanel.Show();
         await ExerciseMixControls();
-        await ToggleMixPlayback();
+        var other = new MixProject { Name = "Workspace preview smoke test" };
+        _catalog.SaveMix(other, makeActive: false);
+        try
+        {
+            SaveMix();
+            SetMix(other);
+            RefreshMixTree(new(other.Id, false));
+            var row = _workspaceRows[new(original.Id, false)];
+            _mixTree.ScrollToItem(row);
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            using var click = new InputEventMouseButton { Position = _mixTree.GetItemAreaRect(row, 0).GetCenter(), ButtonIndex = MouseButton.Right, Pressed = true };
+            _mixTree.EmitSignal(Control.SignalName.GuiInput, click);
+            int playItem = _workspaceMenu.GetItemIndex((int)WorkspaceAction.Play);
+            Check(playItem >= 0 && _workspaceMenu.GetItemText(playItem) == "Play", "right-click mix Play action");
+            _workspaceMenu.EmitSignal(PopupMenu.SignalName.IdPressed, (long)WorkspaceAction.Play);
+            _workspaceMenu.Hide();
+            var deadline = DateTime.UtcNow.AddSeconds(3);
+            while (!_playing && DateTime.UtcNow < deadline) await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            Check(_playing && _mix.Id == original.Id && _mixTree.GetSelected() == row && _soloTrackId == null && _playStart == 0, "Play starts the right-clicked mix from the beginning");
+        }
+        finally
+        {
+            if (_mix.Id == other.Id) SetMix(original);
+            _pendingSave.GetAwaiter().GetResult();
+            _catalog.DeleteMix(other.Id);
+            _mixCache.Remove(other.Id);
+            RefreshMixTree();
+        }
         await ToSignal(GetTree().CreateTimer(.6), SceneTreeTimer.SignalName.Timeout);
         Check(_transport > 0, "live playhead advance");
         _mix.Tracks[0].Muted = true; UpdateLiveMix();
         await SeekMix(.3); Check(_playing, "resume after seeking"); StopMix(true);
         _mix = original; RebuildTracks(); SaveMix();
-        GD.Print("SOUNDSHELF_UI_OK context file-location preview tag-create drag trim pitch volume undo playback mute seek");
+        GD.Print("SOUNDSHELF_UI_OK context file-location preview tag-create drag trim pitch volume undo workspace-play mute seek");
     }
 }

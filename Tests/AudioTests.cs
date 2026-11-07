@@ -133,6 +133,24 @@ public class AudioTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => audio.ExportAsync(mix, wav, false, null, cancel.Token)); Assert.Equal(before, File.ReadAllBytes(wav));
     }
     [Fact]
+    public async Task SoundCopyPreservesSourceAndRequiresOverwritePermission()
+    {
+        using var w = new Workspace();
+        string source = w.FileAt("library/source.wav", "source audio");
+        string destination = w.FileAt("copies/renamed.wav", "previous audio");
+        await Assert.ThrowsAsync<IOException>(() => SoundFileCopy.CopyAsync(source, source, true, default));
+        await Assert.ThrowsAsync<IOException>(() => SoundFileCopy.CopyAsync(source, destination, false, default));
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => SoundFileCopy.CopyAsync(source, destination, true, canceled.Token));
+        Assert.Equal("previous audio", File.ReadAllText(destination));
+        await SoundFileCopy.CopyAsync(source, destination, true, default);
+        Assert.Equal("source audio", File.ReadAllText(destination));
+        Assert.Equal("source audio", File.ReadAllText(source));
+        Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(destination)!, "*.tmp"));
+    }
+
+    [Fact]
     public async Task ExportToNestedLibraryFolderIsImmediatelySearchable()
     {
         using var w = new Workspace(); var library = w.Catalog.AddLibrary(w.DirectoryAt("library")); w.DirectoryAt("library/Exports/Nested");

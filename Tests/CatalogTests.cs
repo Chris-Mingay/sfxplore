@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using SoundShelf.Core;
+using System.Text.Json;
 using Xunit;
 
 namespace SoundShelf.Tests;
@@ -147,6 +148,83 @@ public class CatalogTests
         var reopened = new Catalog(Path.Combine(w.Root, "catalog.sqlite")); var loaded = reopened.LoadMix(mix.Id)!;
         Assert.Equal("Rain", loaded.Name); Assert.Equal(1.5, loaded.Tracks[0].Start); Assert.Equal(2, loaded.Tracks[0].Envelope.Count); Assert.Equal("wide", reopened.GetSetting("layout")); Assert.Equal(mix.Id.ToString(), reopened.GetSetting("last_mix"));
     }
+
+    [Fact]
+    public void WorkspaceMigrationKeepsOldMixesAndPersistsNestedFolders()
+    {
+        using var w = new Workspace();
+        string path = Path.Combine(w.Root, "legacy.sqlite");
+        using (var db = new SqliteConnection($"Data Source={path}"))
+        {
+            db.Open();
+            using var command = db.CreateCommand();
+            command.CommandText = """
+                PRAGMA user_version=1;
+                CREATE TABLE mixes(id INTEGER PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL,updated TEXT NOT NULL);
+                CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                INSERT INTO mixes VALUES(1,'Legacy mix',$body,'2026-01-01');
+                INSERT INTO settings VALUES('last_mix','1');
+                """;
+            command.Parameters.AddWithValue("$body", JsonSerializer.Serialize(new MixProject { Name = "Legacy mix" }));
+            command.ExecuteNonQuery();
+        }
+
+        var catalog = new Catalog(path);
+        Assert.Null(Assert.Single(catalog.Mixes()).FolderId);
+        Assert.Equal("Legacy mix", catalog.LoadMix(1)?.Name);
+        Assert.Equal("1", catalog.GetSetting("last_mix"));
+
+        long parent = catalog.CreateMixFolder("Projects", null);
+        long child = catalog.CreateMixFolder("Ambience", parent);
+        long leaf = catalog.CreateMixFolder("Rain", child);
+        var mix = new MixProject { Name = "Rain loop" };
+        catalog.SaveMix(mix, newMixFolderId: leaf);
+        mix.Name = "Rain loop v2";
+        catalog.SaveMix(mix);
+
+        var reopened = new Catalog(path);
+        Assert.Contains(new MixFolder(parent, null, "Projects"), reopened.MixFolders());
+        Assert.Contains(new MixFolder(child, parent, "Ambience"), reopened.MixFolders());
+        Assert.Contains(new MixFolder(leaf, child, "Rain"), reopened.MixFolders());
+        Assert.Contains((mix.Id, "Rain loop v2", (long?)leaf), reopened.Mixes());
+        Assert.Equal("Rain loop v2", reopened.LoadMix(mix.Id)?.Name);
+    }
+
+    [Fact]
+    public void WorkspaceMovesCopiesAndDeletesWholeBranches()
+    {
+        using var w = new Workspace();
+        var catalog = w.Catalog;
+        long projects = catalog.CreateMixFolder("Projects", null);
+        long rain = catalog.CreateMixFolder("Rain", null);
+        long storms = catalog.CreateMixFolder("Storms", rain);
+        var mix = new MixProject { Name = "Thunder", Tracks = new() { new() { Name = "Source", TrimEnd = 1 } } };
+        catalog.SaveMix(mix);
+        catalog.MoveMix(mix.Id, storms);
+        catalog.MoveMixFolder(rain, projects);
+        Assert.Throws<InvalidOperationException>(() => catalog.MoveMixFolder(rain, rain));
+        Assert.Throws<InvalidOperationException>(() => catalog.MoveMixFolder(projects, storms));
+        catalog.RenameMixFolder(rain, "Weather");
+        Assert.Contains(new MixFolder(rain, projects, "Weather"), catalog.MixFolders());
+
+        long copy = catalog.DuplicateMixFolder(rain, "Weather copy");
+        Assert.Contains(new MixFolder(copy, projects, "Weather copy"), catalog.MixFolders());
+        var stormsCopy = Assert.Single(catalog.MixFolders(), folder => folder.ParentId == copy);
+        Assert.Equal("Storms", stormsCopy.Name);
+        var mixCopy = Assert.Single(catalog.Mixes(), item => item.FolderId == stormsCopy.Id);
+        Assert.NotEqual(mix.Id, mixCopy.Id);
+        Assert.Equal("Source", Assert.Single(catalog.LoadMix(mixCopy.Id)!.Tracks).Name);
+
+        Assert.Equal(new[] { mix.Id }, catalog.DeleteMixFolder(rain));
+        Assert.Null(catalog.LoadMix(mix.Id));
+        Assert.DoesNotContain(catalog.MixFolders(), folder => folder.Id == storms || folder.Id == rain);
+        catalog.MoveMix(mixCopy.Id, null);
+        catalog.MoveMixFolder(copy, null);
+        var reopened = new Catalog(Path.Combine(w.Root, "catalog.sqlite"));
+        Assert.Contains(new MixFolder(copy, null, "Weather copy"), reopened.MixFolders());
+        Assert.Null(Assert.Single(reopened.Mixes()).FolderId);
+    }
+
     [Fact]
     public async Task DirectoryLinksCannotCreateDuplicateTraversal()
     {

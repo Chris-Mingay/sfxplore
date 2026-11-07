@@ -114,7 +114,7 @@ public sealed class AudioLibrary : IDisposable
         await Task.WhenAll(paths.Select(async path => { if (File.Exists(path)) result[path] = await LoadAsync(path, cancel).ConfigureAwait(false); })).ConfigureAwait(false);
         return new(result);
     }
-    public async Task ExportAsync(MixProject snapshot, string destination, bool ogg, IProgress<double>? progress, CancellationToken cancel)
+    public async Task ExportAsync(MixProject snapshot, string destination, bool ogg, IProgress<double>? progress, CancellationToken cancel, bool overwrite = true)
     {
         if (!snapshot.AudibleTracks.Any(t => t.Duration > 0)) throw new InvalidOperationException("Add an unmuted sound before exporting.");
         if (snapshot.AudibleTracks.Any(t => !File.Exists(t.SourcePath))) throw new IOException("Resolve, remove, or mute the unavailable tracks before exporting.");
@@ -149,7 +149,7 @@ public sealed class AudioLibrary : IDisposable
             }, cancel).ConfigureAwait(false);
             await p.WaitForExitAsync(cancel).ConfigureAwait(false); string error = await errors.ConfigureAwait(false); await output.ConfigureAwait(false);
             if (p.ExitCode != 0) throw new IOException("Export failed: " + error);
-            cancel.ThrowIfCancellationRequested(); File.Move(temp, full, true); progress?.Report(1);
+            cancel.ThrowIfCancellationRequested(); File.Move(temp, full, overwrite); progress?.Report(1);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }

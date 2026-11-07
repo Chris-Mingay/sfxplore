@@ -9,6 +9,7 @@ public partial class Main
     {
         Directory.CreateDirectory(directory);
         var original = _mix.Clone(); var offsets = _mainSplit.SplitOffsets; double zoom = _pixelsPerSecond;
+        var expandedTracks = _expandedTracks.ToArray();
         try
         {
             _mainSplit.SplitOffsets = new[] { 200 }; _mixPanel.Show();
@@ -18,6 +19,11 @@ public partial class Main
             var second = first.Clone(); second.Id = Guid.NewGuid(); second.TrimEnd = .08; second.Volume = new() { Mode = VolumeMode.Both }; second.Semitones = -24;
             var third = first.Clone(); third.Id = Guid.NewGuid(); third.Volume = new() { Mode = VolumeMode.None }; third.Gain = TrackVolume.FromDecibels(-24); // Pink and yellow coincide.
             _mix.Tracks = new() { first, second, third }; RebuildTracks();
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+            await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+            GetViewport().GetTexture().GetImage().SavePng(Path.Combine(directory, "mix-controls-compact.png"));
+            var disclosures = _trackControls.FindChildren("TrackDisclosure", "Button", true, false).OfType<Button>().ToArray();
+            disclosures[0].ButtonPressed = disclosures[1].ButtonPressed = true;
             foreach (double scale in new[] { 80.0, 10.0, 300.0, 3000.0 })
             {
                 SetTimelineZoom(scale);
@@ -31,11 +37,16 @@ public partial class Main
                 await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
                 GetViewport().GetTexture().GetImage().SavePng(Path.Combine(directory, $"mix-controls-{scale:0}.png"));
             }
-            _tracksScroll.ScrollVertical = TrackHeight * 2;
+            _tracksScroll.ScrollVertical = (int)(_trackLanes[0].Size.Y + _trackLanes[1].Size.Y);
             await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame); await ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
             GetViewport().GetTexture().GetImage().SavePng(Path.Combine(directory, "mix-controls-overlap.png"));
         }
-        finally { _mix = original; _mainSplit.SplitOffsets = offsets; SetTimelineZoom(zoom); RebuildTracks(); }
+        finally
+        {
+            _expandedTracks.Clear();
+            _expandedTracks.UnionWith(expandedTracks);
+            _mix = original; _mainSplit.SplitOffsets = offsets; SetTimelineZoom(zoom); RebuildTracks();
+        }
     }
 
     private async Task ExerciseMixControls()
@@ -58,7 +69,27 @@ public partial class Main
         try
         {
             await Layout();
+            var disclosures = _trackControls.FindChildren("TrackDisclosure", "Button", true, false).OfType<Button>().ToArray();
+            var mutes = _trackControls.FindChildren("TrackMute", "Button", true, false).OfType<Button>().ToArray();
             var soloButtons = _trackControls.FindChildren("TrackSolo", "Button", true, false).OfType<Button>().ToArray();
+            Check(disclosures.All(button => !button.ButtonPressed && button.Icon != null) && soloButtons.All(button => !button.IsVisibleInTree()), "tracks start collapsed");
+            var mute = mutes[0];
+            var originalIcon = mute.Icon;
+            Check(mute.IsVisibleInTree() && mute.Text.Length == 0 && originalIcon != null, "mute is an icon in the collapsed header");
+            mute.ButtonPressed = !mute.ButtonPressed;
+            Check(_mix.Tracks[0].Muted != original.Tracks[0].Muted && mute.Icon != originalIcon, "mute toggles playback state and icon");
+            mute.ButtonPressed = !mute.ButtonPressed;
+            disclosures[0].ButtonPressed = true;
+            await Layout();
+            var panels = _trackControls.GetChildren().OfType<PanelContainer>().ToArray();
+            for (int i = 0; i < panels.Length; i++)
+                Check(Math.Abs(panels[i].GlobalPosition.Y - _trackLanes[i].GlobalPosition.Y) <= 1 && Math.Abs(panels[i].Size.Y - _trackLanes[i].Size.Y) <= 1, "expanded and compact tracks align with timeline lanes");
+            Check(soloButtons[0].IsVisibleInTree() && _trackLanes[0].Size.Y > CompactTrackHeight, "chevron reveals controls and grows the lane");
+            disclosures[0].ButtonPressed = false;
+            await Layout();
+            Check(!soloButtons[0].IsVisibleInTree() && _trackLanes[0].Size.Y == CompactTrackHeight, "chevron restores the compact lane");
+            foreach (var disclosure in disclosures) disclosure.ButtonPressed = true;
+            await Layout();
             Check(soloButtons.Length == _mix.Tracks.Count, "SOLO on every track");
             Check(soloButtons.All(b => !b.ToggleMode), "SOLO is a playback action, not a toggle");
             string savedMix = System.Text.Json.JsonSerializer.Serialize(_mix);
@@ -181,8 +212,8 @@ public partial class Main
                 Check(updates >= 2, "continuous live updates");
             }
             finally { _liveUpdateTimer.Timeout -= Updated; StopMix(true); }
-            GD.Print("SOUNDSHELF_MIX_CONTROLS_OK pitch volume four-handles modes curves undo live-updates solo-play replay-on-edit");
+            GD.Print("SOUNDSHELF_MIX_CONTROLS_OK compact disclosure lane-alignment mute-icon pitch volume four-handles modes curves undo live-updates solo-play replay-on-edit");
         }
-        finally { StopMix(true); _mix = original; _history.Clear(); RebuildTracks(); await Layout(); }
+        finally { StopMix(true); _mix = original; _history.Clear(); _expandedTracks.Clear(); RebuildTracks(); await Layout(); }
     }
 }

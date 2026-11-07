@@ -52,17 +52,16 @@ public partial class BrowserTile : Control
     public bool Selected { get; set; }
     public event Action<BrowserTile, bool>? Clicked;
     public override void _Ready()
-    { CustomMinimumSize = new(180, 126); FocusMode = FocusModeEnum.All; MouseDefaultCursorShape = CursorShape.PointingHand; TooltipText = Entry.RelativePath + (Entry.Tags.Count > 0 ? "\n" + string.Join(", ", Entry.Tags.Select(t => t.Name)) : ""); MouseEntered += QueueRedraw; MouseExited += QueueRedraw; }
+    { CustomMinimumSize = new(180, 126); FocusMode = FocusModeEnum.All; MouseDefaultCursorShape = CursorShape.PointingHand; TooltipText = Entry.RelativePath + (Entry.Tags.Count > 0 ? "\n" + string.Join(", ", Entry.Tags.Select(t => t.Name)) : ""); MouseEntered += QueueRedraw; MouseExited += QueueRedraw; FocusEntered += QueueRedraw; FocusExited += QueueRedraw; }
     public override void _GuiInput(InputEvent @event)
     {
         if (@event is InputEventMouseButton { Pressed: true } mouse && (mouse.ButtonIndex == MouseButton.Left || mouse.ButtonIndex == MouseButton.Right))
         { GrabFocus(); Clicked?.Invoke(this, mouse.ButtonIndex == MouseButton.Right); AcceptEvent(); }
-        if (@event is InputEventKey { Pressed: true, Keycode: Key.Enter }) { Clicked?.Invoke(this, false); AcceptEvent(); }
     }
     public override void _Draw()
     {
         bool hover = GetLocalMousePosition().X >= 0 && GetLocalMousePosition().Y >= 0 && new Rect2(Vector2.Zero, Size).HasPoint(GetLocalMousePosition());
-        DrawStyleBox(Skin.Box(Selected ? new("344f68") : hover ? Skin.Raised : Skin.Panel, 5, Selected ? Skin.Accent : Skin.Border), new(Vector2.Zero, Size));
+        DrawStyleBox(Skin.Box(Selected ? new("344f68") : hover ? Skin.Raised : Skin.Panel, 5, Selected || HasFocus() ? Skin.Accent : Skin.Border), new(Vector2.Zero, Size));
         float cx = Size.X / 2;
         if (Entry.IsFolder)
         {
@@ -108,6 +107,7 @@ public partial class TrackLane : Control
     public float[] Peaks { get; set; } = Array.Empty<float>();
     public double PixelsPerSecond { get; set; } = 80;
     public double Playhead { get; set; }
+    internal bool Expanded { get; set; }
     public event Action? EditStarted;
     public event Action? Edited;
     public event Action<bool>? EditFinished;
@@ -119,10 +119,11 @@ public partial class TrackLane : Control
     private bool _changed;
     private string _readout = "";
     private static readonly Color Pink = new("f366d9"), Yellow = new("ffe078"), Orange = new("ff983e");
-    private float Top => 58;
-    private float Bottom => Size.Y - 34;
+    private float ClipTop => Expanded ? 38 : 19;
+    private float Top => ClipTop + (Expanded ? 20 : 8);
+    private float Bottom => Size.Y - (Expanded ? 34 : 32);
     private bool CanEditVolume => Track.Volume != null || Track.Envelope.Count == 0;
-    private Rect2 Clip => new((float)(Track.Start * PixelsPerSecond), 38, Math.Max(2, (float)(Track.Duration * PixelsPerSecond)), Size.Y - 54);
+    private Rect2 Clip => new((float)(Track.Start * PixelsPerSecond), ClipTop, Math.Max(2, (float)(Track.Duration * PixelsPerSecond)), Size.Y - ClipTop - 16);
     internal Vector2 PitchGrabPosition => new(Clip.GetCenter().X, PitchY(Track.Semitones));
     internal Vector2 VolumeGrabPosition => new(Clip.Position.X + (float)(((Track.Volume?.HasIn == true ? Track.Volume.InEnd : 0) + (Track.Volume?.HasOut == true ? Track.Volume.OutStart : 1)) / 2) * Clip.Size.X, VolumeY(Track.Gain));
     private float PitchY(double pitch) => Top + (float)((24 - pitch) / 48) * (Bottom - Top);
@@ -285,7 +286,7 @@ public partial class TrackLane : Control
             DrawRect(new(x - 5, Bottom + 6, 10, 10), Skin.Text);
             DrawLine(new(x, Bottom + 8), new(x, Bottom + 14), Skin.Background, 2);
         }
-        DrawString(ThemeDB.FallbackFont, new(Math.Max(clip.Position.X + 4, visibleLeft + 4), 21), _readout, fontSize: 11, modulate: Skin.Text);
+        DrawString(ThemeDB.FallbackFont, new(Math.Max(clip.Position.X + 4, visibleLeft + 4), Expanded ? 21 : 14), _readout, fontSize: 11, modulate: Skin.Text);
         float playhead = (float)(Playhead * PixelsPerSecond); DrawLine(new(playhead, 0), new(playhead, Size.Y), new Color("f9d780"), 1.5f);
     }
 }

@@ -11,10 +11,15 @@ public sealed class Catalog
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
         _connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath, DefaultTimeout = 30 }.ToString();
         using var db = Open();
-        using (var version = db.CreateCommand()) { version.CommandText = "PRAGMA user_version"; if (Convert.ToInt32(version.ExecuteScalar()) > 1) throw new InvalidOperationException("This database was created by a newer SFXplore version."); }
         using var command = db.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=WAL";
+        command.ExecuteNonQuery();
+        using var transaction = db.BeginTransaction();
+        command.Transaction = transaction;
+        command.CommandText = "PRAGMA user_version";
+        int version = Convert.ToInt32(command.ExecuteScalar());
+        if (version > 2) throw new InvalidOperationException("This database was created by a newer SFXplore version.");
         command.CommandText = """
-            PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS libraries(id INTEGER PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE);
             CREATE TABLE IF NOT EXISTS folders(library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE, path TEXT NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(library_id,path));
             CREATE TABLE IF NOT EXISTS sounds(id INTEGER PRIMARY KEY, library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE, path TEXT NOT NULL, path_key TEXT NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL, present INTEGER NOT NULL DEFAULT 1, UNIQUE(library_id,path_key));
@@ -29,9 +34,18 @@ public sealed class Catalog
             CREATE TABLE IF NOT EXISTS scans(id INTEGER PRIMARY KEY, library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE, created TEXT NOT NULL, added INTEGER NOT NULL,removed INTEGER NOT NULL,changed INTEGER NOT NULL,entries TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS mixes(id INTEGER PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL,updated TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-            PRAGMA user_version=1;
             """;
         command.ExecuteNonQuery();
+        if (version < 2)
+        {
+            command.CommandText = """
+                CREATE TABLE mix_folders(id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES mix_folders(id), name TEXT NOT NULL);
+                ALTER TABLE mixes ADD COLUMN folder_id INTEGER REFERENCES mix_folders(id);
+                PRAGMA user_version=2;
+                """;
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
     private SqliteConnection Open()
     {
@@ -115,7 +129,7 @@ public sealed class Catalog
             using var fc = Command(db, "SELECT count(*) FROM folders WHERE library_id=$lib AND parent=$folder AND path<>''", ("$lib", libraryId), ("$folder", folder)); folderCount = Convert.ToInt32(fc.ExecuteScalar());
             if (offset < folderCount)
             {
-                using var f = Command(db, "SELECT name,path FROM folders WHERE library_id=$lib AND parent=$folder AND path<>'' ORDER BY name COLLATE NOCASE LIMIT $limit OFFSET $offset", ("$lib", libraryId), ("$folder", folder), ("$limit", limit), ("$offset", offset));
+                using var f = Command(db, "SELECT name,path FROM folders WHERE library_id=$lib AND parent=$folder AND path<>'' ORDER BY name COLLATE NOCASE,path LIMIT $limit OFFSET $offset", ("$lib", libraryId), ("$folder", folder), ("$limit", limit), ("$offset", offset));
                 using var fr = f.ExecuteReader(); while (fr.Read()) entries.Add(new(fr.GetString(0), fr.GetString(1), true, null, new()));
             }
         }
@@ -131,7 +145,7 @@ public sealed class Catalog
                 entries.Add(new(r.GetString(6), sound.RelativePath, false, sound, new()));
             }
         }
-        // One query for the visible page's tags, rather than one connection per tile.
+        // Fetch tags for the entire batch in one query.
         var byId = entries.Where(e => e.Sound != null).ToDictionary(e => e.Sound!.Id);
         if (byId.Count > 0)
         {
@@ -246,13 +260,139 @@ public sealed class Catalog
         using var db = Open(); using var cmd = Command(db, "SELECT library_id,added,removed,changed,entries FROM scans WHERE id=$id", ("$id", id)); using var r = cmd.ExecuteReader(); if (!r.Read()) throw new InvalidOperationException("Scan not found.");
         return new(id, r.GetInt64(0), r.GetInt32(1), r.GetInt32(2), r.GetInt32(3), JsonSerializer.Deserialize<List<ScanEntry>>(r.GetString(4))!);
     }
-    public List<(long Id, string Name)> Mixes()
+    public List<MixFolder> MixFolders()
     {
-        using var db = Open(); using var cmd = Command(db, "SELECT id,name FROM mixes ORDER BY updated DESC"); using var r = cmd.ExecuteReader(); var list = new List<(long, string)>(); while (r.Read()) list.Add((r.GetInt64(0), r.GetString(1))); return list;
+        using var db = Open();
+        using var cmd = Command(db, "SELECT id,parent_id,name FROM mix_folders ORDER BY name COLLATE NOCASE,id");
+        using var r = cmd.ExecuteReader();
+        var folders = new List<MixFolder>();
+        while (r.Read()) folders.Add(new(r.GetInt64(0), r.IsDBNull(1) ? null : r.GetInt64(1), r.GetString(2)));
+        return folders;
     }
-    public void SaveMix(MixProject mix, bool makeActive = true)
+
+    private static string MixFolderName(string name)
     {
-        using var db = Open(); using var cmd = Command(db, mix.Id == 0 ? "INSERT INTO mixes(name,body,updated) VALUES($name,$body,$now); SELECT last_insert_rowid();" : "UPDATE mixes SET name=$name,body=$body,updated=$now WHERE id=$id; SELECT $id;", ("$id", mix.Id), ("$name", mix.Name), ("$body", JsonSerializer.Serialize(mix)), ("$now", DateTime.UtcNow.ToString("O")));
+        name = name.Trim();
+        if (name.Length == 0) throw new ArgumentException("Enter a folder name.");
+        return name;
+    }
+
+    public long CreateMixFolder(string name, long? parentId)
+    {
+        using var db = Open();
+        return InsertMixFolder(db, null, MixFolderName(name), parentId);
+    }
+
+    private static long InsertMixFolder(SqliteConnection db, SqliteTransaction? transaction, string name, long? parentId)
+    {
+        using var cmd = Command(db, "INSERT INTO mix_folders(parent_id,name) VALUES($parent,$name); SELECT last_insert_rowid();", ("$parent", parentId), ("$name", name));
+        cmd.Transaction = transaction;
+        return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    public void RenameMixFolder(long id, string name)
+    {
+        using var db = Open();
+        using var cmd = Command(db, "UPDATE mix_folders SET name=$name WHERE id=$id", ("$id", id), ("$name", MixFolderName(name)));
+        cmd.ExecuteNonQuery();
+    }
+
+    private const string MixFolderSubtree = """
+        WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM mix_folders WHERE id=$id
+            UNION ALL
+            SELECT f.id FROM mix_folders f JOIN subtree s ON f.parent_id=s.id
+        )
+        """;
+
+    public void MoveMixFolder(long id, long? parentId)
+    {
+        using var db = Open();
+        using var cmd = Command(db, MixFolderSubtree + """
+
+            UPDATE mix_folders SET parent_id=$parent WHERE id=$id
+            AND NOT EXISTS (SELECT 1 FROM subtree WHERE id=$parent)
+            RETURNING id
+            """, ("$id", id), ("$parent", parentId));
+        if (cmd.ExecuteScalar() == null) throw new InvalidOperationException("A folder can’t be moved into itself or one of its descendants.");
+    }
+
+    public void MoveMix(long id, long? folderId)
+    {
+        using var db = Open();
+        using var cmd = Command(db, "UPDATE mixes SET folder_id=$folder WHERE id=$id", ("$id", id), ("$folder", folderId));
+        cmd.ExecuteNonQuery();
+    }
+
+    public long DuplicateMixFolder(long id, string name)
+    {
+        name = MixFolderName(name);
+        using var db = Open();
+        using var transaction = db.BeginTransaction();
+        using var cmd = Command(db, """
+            WITH RECURSIVE subtree(id,parent_id,name,depth) AS (
+                SELECT id,parent_id,name,0 FROM mix_folders WHERE id=$id
+                UNION ALL
+                SELECT f.id,f.parent_id,f.name,s.depth+1 FROM mix_folders f JOIN subtree s ON f.parent_id=s.id
+            )
+            SELECT id,parent_id,name FROM subtree ORDER BY depth,id
+            """, ("$id", id));
+        cmd.Transaction = transaction;
+        var folders = new List<MixFolder>();
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read()) folders.Add(new(reader.GetInt64(0), reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.GetString(2)));
+        if (folders.Count == 0) throw new InvalidOperationException("Folder not found.");
+
+        var copies = new Dictionary<long, long>();
+        using var copyMixes = Command(db, """
+            INSERT INTO mixes(name,body,updated,folder_id)
+            SELECT name,body,$now,$destination FROM mixes WHERE folder_id=$source
+            """, ("$now", DateTime.UtcNow.ToString("O")));
+        copyMixes.Transaction = transaction;
+        var source = copyMixes.Parameters.Add("$source", SqliteType.Integer);
+        var destination = copyMixes.Parameters.Add("$destination", SqliteType.Integer);
+        foreach (var folder in folders)
+        {
+            bool isRoot = folder.Id == id;
+            long? parent = isRoot ? folder.ParentId : copies[folder.ParentId!.Value];
+            long copy = InsertMixFolder(db, transaction, isRoot ? name : folder.Name, parent);
+            copies.Add(folder.Id, copy);
+            source.Value = folder.Id;
+            destination.Value = copy;
+            copyMixes.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        return copies[id];
+    }
+
+    public List<long> DeleteMixFolder(long id)
+    {
+        using var db = Open();
+        using var transaction = db.BeginTransaction();
+        using var cmd = Command(db, MixFolderSubtree + "\nDELETE FROM mixes WHERE folder_id IN subtree RETURNING id", ("$id", id));
+        cmd.Transaction = transaction;
+        var deletedMixes = new List<long>();
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read()) deletedMixes.Add(reader.GetInt64(0));
+        cmd.CommandText = MixFolderSubtree + "\nDELETE FROM mix_folders WHERE id IN subtree";
+        cmd.ExecuteNonQuery();
+        transaction.Commit();
+        return deletedMixes;
+    }
+
+    public List<(long Id, string Name, long? FolderId)> Mixes()
+    {
+        using var db = Open();
+        using var cmd = Command(db, "SELECT id,name,folder_id FROM mixes ORDER BY updated DESC");
+        using var r = cmd.ExecuteReader();
+        var mixes = new List<(long, string, long?)>();
+        while (r.Read()) mixes.Add((r.GetInt64(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetInt64(2)));
+        return mixes;
+    }
+
+    public void SaveMix(MixProject mix, bool makeActive = true, long? newMixFolderId = null)
+    {
+        using var db = Open(); using var cmd = Command(db, mix.Id == 0 ? "INSERT INTO mixes(name,body,updated,folder_id) VALUES($name,$body,$now,$folder); SELECT last_insert_rowid();" : "UPDATE mixes SET name=$name,body=$body,updated=$now WHERE id=$id; SELECT $id;", ("$id", mix.Id), ("$name", mix.Name), ("$body", JsonSerializer.Serialize(mix)), ("$now", DateTime.UtcNow.ToString("O")), ("$folder", newMixFolderId));
         mix.Id = Convert.ToInt64(cmd.ExecuteScalar()); if (makeActive) SetSetting("last_mix", mix.Id.ToString());
     }
     public MixProject? LoadMix(long id)

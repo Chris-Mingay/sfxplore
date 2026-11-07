@@ -9,6 +9,7 @@ public record BrowserEntry(string Name, string RelativePath, bool IsFolder, Soun
 public record CatalogPage(List<BrowserEntry> Entries, int Total);
 public record ScanEntry(string Kind, string Path, string Detail = "");
 public record ScanResult(long Id, long LibraryId, int Added, int Removed, int Changed, List<ScanEntry> Entries);
+public record MixFolder(long Id, long? ParentId, string Name);
 public record ScanProgress(int Files, string Path);
 public record EnvelopePoint(double SourceSeconds, float Gain);
 
