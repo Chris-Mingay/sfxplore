@@ -74,7 +74,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     preset = "Windows" if WINDOWS else "macOS Apple Silicon" if MAC and ARM else "macOS Intel" if MAC else "Linux"
     destination = output / ("SFXplore.exe" if WINDOWS else "SFXplore.zip" if MAC else "SFXplore.x86_64")
-    call(engine, "--headless", "--path", ROOT, "--export-release", preset, destination)
+    call(engine, "--headless", "--path", ROOT, "--export-release", preset, destination, "--quit")
     package_root = output
     if MAC:
         with zipfile.ZipFile(destination) as app:

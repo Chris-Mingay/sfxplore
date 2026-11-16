@@ -31,6 +31,8 @@ The desktop workflow runs for pull requests, release tags matching `v*`, and man
 
 The workflow builds Windows x64, Linux x64, Mac Intel, and Mac Apple Silicon. Each platform runs unit tests and Godot interaction smoke tests, exports the app, and smoke-tests the exported executable before archiving it.
 
+The template fetcher preserves the official universal macOS archive and derives separate Intel/Apple Silicon templates from its Mach-O slices. This supplies the architecture-specific filenames Godot's exporter expects while keeping each package aligned with its .NET runtime and audio-tool architecture.
+
 Archives contain the complete package, `VERSION`, `CHANGELOG.md`, and `build-info.json` with its version, Git commit, and architecture. Tar archives preserve Linux/Mac executable permissions and bundle links through GitHub artifact storage.
 
 When all four tagged builds succeed, CI creates a **draft GitHub release** with the archives, changelog notes, and `release-manifest.json` recording their SHA-256 checksums and originating workflow run. These release assets retain the packages independently of the temporary Actions artifacts (90-day retention).

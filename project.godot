@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/version="0.2.3"
+config/version="0.2.4"
 
 config/name="SFXplore"
 run/main_scene="res://Main.tscn"
@@ -40,4 +40,5 @@ project/assembly_name="SFXplore"
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
 environment/defaults/default_clear_color=Color(0.12, 0.14, 0.18, 1)

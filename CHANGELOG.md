@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.4
+
+- Generate Intel and Apple Silicon export templates from the official universal macOS binaries.
+- Preserve template bundle metadata and permissions while validating architecture slice bounds.
+- Enable ETC2/ASTC texture imports required by the Apple Silicon export preset.
+- Explicitly exit the headless editor after CI exports finish.
+
 ## 0.2.3
 
 - Resolve macOS FFmpeg dependencies using Mach-O run paths, including transitive Homebrew WebP libraries.

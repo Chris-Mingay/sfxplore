@@ -12,6 +12,7 @@ import shutil
 import sys
 import urllib.request
 import zipfile
+from macos_templates import prepare_templates
 
 URL = "https://godot-releases.nbg1.your-objectstorage.com/4.7.2-stable/Godot_v4.7.2-stable_mono_export_templates.tpz"
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -81,13 +82,18 @@ def main():
             print(f"Extracting {target} ({entry.compress_size / 1048576:.1f} MiB transfer)", flush=True)
             with archive.open(entry) as source, path.open("wb") as destination:
                 shutil.copyfileobj(source, destination, 1024 * 1024)
-            manifest[target] = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+            with path.open("rb") as stream:
+                manifest[target] = hashlib.file_digest(stream, "sha256").hexdigest()
             expected = json.loads((ROOT / "dependencies.json").read_text())["godot"].get(target)
             if expected and expected != manifest[target]:
                 path.unlink()
                 raise RuntimeError(f"Checksum mismatch for {target}")
             if platform == "linux":
                 path.chmod(0o755)
+    if platform == "macos":
+        for path in prepare_templates(output / "macos.zip", output):
+            with path.open("rb") as stream:
+                manifest[path.name] = hashlib.file_digest(stream, "sha256").hexdigest()
     (output / f"{platform}-checksums.json").write_text(json.dumps({"source": URL, "sha256": manifest}, indent=2))
     print("Templates ready.", flush=True)
 
