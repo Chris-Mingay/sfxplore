@@ -131,26 +131,40 @@ public sealed class AudioLibrary : IDisposable
         string temp = Path.Combine(Path.GetDirectoryName(full)!, ".soundshelf-" + Guid.NewGuid() + ".tmp");
         try
         {
-            // FFmpeg writes 24-bit integer PCM with an extensible header that Godot rejects.
+            // Float samples preserve mix precision; normalize old FFmpeg's extensible header below.
             using var p = Start(Ffmpeg, new[] { "-v", "error", "-y", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0", "-c:a", ogg ? "libvorbis" : "pcm_f32le", ogg ? "-q:a" : "-rf64", ogg ? "6" : "auto", "-f", ogg ? "ogg" : "wav", temp }, true);
             using var reg = cancel.Register(() => Kill(p));
             var errors = p.StandardError.ReadToEndAsync(); var output = p.StandardOutput.ReadToEndAsync();
-            await Task.Run(async () =>
+            try
             {
-                var kernel = new MixRenderer(snapshot, sources); long total = (long)Math.Ceiling(snapshot.Duration * PcmSource.SampleRate);
-                var buffer = new float[2048 * 2]; var bytes = new byte[buffer.Length * sizeof(float)];
-                for (long start = 0; start < total; start += 2048)
+                await Task.Run(async () =>
                 {
-                    cancel.ThrowIfCancellationRequested(); int count = (int)Math.Min(2048, total - start);
-                    kernel.Render(start, count, buffer); Buffer.BlockCopy(buffer, 0, bytes, 0, count * 8);
-                    await p.StandardInput.BaseStream.WriteAsync(bytes.AsMemory(0, count * 8), cancel).ConfigureAwait(false);
-                    if (start % (2048 * 24) == 0) progress?.Report(start / (double)total);
-                }
-                p.StandardInput.Close();
-            }, cancel).ConfigureAwait(false);
+                    var kernel = new MixRenderer(snapshot, sources); long total = (long)Math.Ceiling(snapshot.Duration * PcmSource.SampleRate);
+                    var buffer = new float[2048 * 2]; var bytes = new byte[buffer.Length * sizeof(float)];
+                    for (long start = 0; start < total; start += 2048)
+                    {
+                        cancel.ThrowIfCancellationRequested(); int count = (int)Math.Min(2048, total - start);
+                        kernel.Render(start, count, buffer); Buffer.BlockCopy(buffer, 0, bytes, 0, count * 8);
+                        await p.StandardInput.BaseStream.WriteAsync(bytes.AsMemory(0, count * 8), cancel).ConfigureAwait(false);
+                        if (start % (2048 * 24) == 0) progress?.Report(start / (double)total);
+                    }
+                    p.StandardInput.Close();
+                }, cancel).ConfigureAwait(false);
+            }
+            catch (IOException pipeError)
+            {
+                Kill(p);
+                await p.WaitForExitAsync().ConfigureAwait(false);
+                string diagnostic = await errors.ConfigureAwait(false);
+                await output.ConfigureAwait(false);
+                cancel.ThrowIfCancellationRequested();
+                throw new IOException("Export failed: " + (string.IsNullOrWhiteSpace(diagnostic) ? pipeError.Message : diagnostic), pipeError);
+            }
             await p.WaitForExitAsync(cancel).ConfigureAwait(false); string error = await errors.ConfigureAwait(false); await output.ConfigureAwait(false);
             if (p.ExitCode != 0) throw new IOException("Export failed: " + error);
-            cancel.ThrowIfCancellationRequested(); File.Move(temp, full, overwrite); progress?.Report(1);
+            cancel.ThrowIfCancellationRequested();
+            if (!ogg) FloatWaveFormat.Normalize(temp);
+            File.Move(temp, full, overwrite); progress?.Report(1);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }

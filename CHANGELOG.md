@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.2.2
+
+- Normalize older FFmpeg's float WAV headers for Godot compatibility without changing audio samples.
+- Allow bounded Vorbis decoder padding while verifying lossless WAV conversion of decoded audio.
+- Resolve linked ancestors inside directory-link targets, including macOS temporary-directory aliases.
+- Bundle Homebrew ffmpeg-full on macOS and check required audio encoders before packaging.
+- Preserve FFmpeg diagnostics when export fails with a broken pipe.
+- Upgrade GitHub Actions to Node.js 24 runtimes.
+
 ## 0.2.1
 
 - Fix CI discovery of the official Linux Godot executable.

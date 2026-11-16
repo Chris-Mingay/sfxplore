@@ -6,9 +6,16 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import ci_build
+from bundle_audio_tools import require_encoders
 
 
 class EngineDiscoveryTests(unittest.TestCase):
+    def test_required_audio_encoders_are_checked(self):
+        with patch("bundle_audio_tools.run", return_value=" A..... pcm_f32le PCM float\n A..... libvorbis Vorbis\n"):
+            require_encoders("ffmpeg")
+        with patch("bundle_audio_tools.run", return_value=" A..... vorbis Native Vorbis\n"), self.assertRaisesRegex(RuntimeError, "libvorbis.*ffmpeg-full"):
+            require_encoders("ffmpeg")
+
     def test_official_archive_layouts(self):
         layouts = {
             "linux-x64": "Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64",

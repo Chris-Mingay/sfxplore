@@ -13,7 +13,10 @@ public static class Paths
         foreach (var component in full[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
         {
             var info = new DirectoryInfo(Path.Combine(current, component));
-            current = info.ResolveLinkTarget(true)?.FullName ?? info.FullName;
+            var target = info.ResolveLinkTarget(true);
+            // A link's absolute target can itself contain linked ancestors
+            // (for example macOS /var -> /private/var).
+            current = target == null ? info.FullName : CanonicalDirectory(target.FullName);
             // Recover the on-disk spelling on case-insensitive macOS volumes too.
             if (OperatingSystem.IsMacOS())
             {
@@ -21,7 +24,8 @@ public static class Paths
                 if (parent != null)
                 {
                     var names = parent.EnumerateDirectories().ToArray();
-                    current = (names.FirstOrDefault(d => d.Name == info.Name) ?? names.FirstOrDefault(d => string.Equals(d.Name, info.Name, StringComparison.OrdinalIgnoreCase)))?.FullName ?? current;
+                    string resolvedName = Path.GetFileName(current);
+                    current = (names.FirstOrDefault(d => d.Name == resolvedName) ?? names.FirstOrDefault(d => string.Equals(d.Name, resolvedName, StringComparison.OrdinalIgnoreCase)))?.FullName ?? current;
                 }
             }
         }

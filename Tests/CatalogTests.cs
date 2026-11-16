@@ -236,6 +236,22 @@ public class CatalogTests
         var result = await w.Catalog.ScanAsync(library, null, default); Assert.Equal(1, result.Added); Assert.Contains(result.Entries, e => e.Kind == "Skipped");
     }
     [Fact]
+    public void LinkTargetsWithLinkedAncestorsUseTheSameCanonicalDirectory()
+    {
+        using var w = new Workspace(); var root = w.DirectoryAt("library");
+        string alias = Path.Combine(w.Root, "alias"), indirect = Path.Combine(w.Root, "indirect");
+        try
+        {
+            Directory.CreateSymbolicLink(alias, w.Root);
+            Directory.CreateSymbolicLink(indirect, Path.Combine(alias, "library"));
+        }
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException) { return; }
+        Assert.Equal(Paths.CanonicalDirectory(root), Paths.CanonicalDirectory(indirect));
+        w.Catalog.AddLibrary(root);
+        Assert.Throws<InvalidOperationException>(() => w.Catalog.AddLibrary(indirect));
+    }
+
+    [Fact]
     public void HundredThousandEntryCatalogUsesBoundedResultPages()
     {
         using var w = new Workspace(); var library = w.Catalog.AddLibrary(w.DirectoryAt("library"));

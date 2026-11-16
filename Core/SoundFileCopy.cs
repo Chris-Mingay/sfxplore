@@ -24,6 +24,7 @@ public static class SoundFileCopy
             string error = await errors.ConfigureAwait(false);
             cancel.ThrowIfCancellationRequested();
             if (process.ExitCode != 0) throw new IOException("Could not convert sound: " + error);
+            if (Path.GetExtension(destination).Equals(".wav", StringComparison.OrdinalIgnoreCase)) FloatWaveFormat.Normalize(temp);
         }, cancellation);
     }
 

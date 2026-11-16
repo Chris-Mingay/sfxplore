@@ -137,7 +137,8 @@ public class AudioTests
             // Godot checks the format tag directly, even when FFmpeg can decode the file.
             Assert.Equal((ushort)3, header.ReadUInt16());
         }
-        Assert.InRange((await audio.LoadAsync(wav)).Duration, .499, .501); Assert.InRange((await audio.LoadAsync(ogg)).Duration, .49, .51);
+        Assert.InRange((await audio.LoadAsync(wav)).Duration, .499, .501);
+        Assert.InRange((await audio.LoadAsync(ogg)).Duration, .5 - 2048.0 / 48000, .5 + 2048.0 / 48000);
         using (var p = AudioLibrary.Start(audio.Ffmpeg, new[] { "-v", "error", "-i", path, mp3 })) { var error = p.StandardError.ReadToEndAsync(); await p.WaitForExitAsync(); Assert.True(p.ExitCode == 0, await error); }
         Assert.InRange((await audio.LoadAsync(mp3)).Duration, .39, .41); Assert.Contains("48000", await audio.ProbeAsync(wav));
         var wavSource = await audio.LoadAsync(wav); var oggSource = await audio.LoadAsync(ogg); double errorPower = 0, power = 0;
@@ -184,7 +185,16 @@ public class AudioTests
         await SoundFileCopy.ConvertAsync(ogg, convertedWav, false, audio.Ffmpeg, default);
         Assert.Equal("PCM_F32LE · 48000 Hz · 2 channels", await audio.ProbeAsync(convertedWav));
         Assert.Equal("WAVE"u8.ToArray(), File.ReadAllBytes(convertedWav)[8..12]);
-        Assert.InRange((await audio.LoadAsync(convertedWav)).Duration, .39, .41);
+        var decodedOgg = await audio.LoadAsync(ogg);
+        var decodedWav = await audio.LoadAsync(convertedWav);
+        // Vorbis decoders in older FFmpeg releases can retain up to one long
+        // block of trailing padding. WAV conversion must preserve that decoded
+        // audio exactly, rather than imposing a platform-specific frame count.
+        Assert.InRange(decodedOgg.Duration, .4 - 2048.0 / 48000, .4 + 2048.0 / 48000);
+        Assert.Equal(decodedOgg.Frames, decodedWav.Frames);
+        for (long frame = 0; frame < decodedOgg.Frames; frame++)
+            for (int channel = 0; channel < 2; channel++)
+                Assert.Equal(decodedOgg.Sample(frame, channel), decodedWav.Sample(frame, channel));
         Assert.Equal(original, File.ReadAllBytes(wav));
         Assert.Equal(oggBytes, File.ReadAllBytes(ogg));
 

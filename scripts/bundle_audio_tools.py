@@ -13,6 +13,14 @@ def run(*args):
     return subprocess.check_output(args, text=True)
 
 
+def require_encoders(executable):
+    listing = run(str(executable), "-hide_banner", "-encoders")
+    encoders = {parts[1] for line in listing.splitlines() if len(parts := line.split()) >= 2 and parts[0].startswith("A")}
+    missing = {"pcm_f32le", "libvorbis"} - encoders
+    if missing:
+        raise RuntimeError(f"FFmpeg is missing required encoders: {', '.join(sorted(missing))}. On macOS install ffmpeg-full and put its bin directory first on PATH.")
+
+
 def bundle(output):
     output = pathlib.Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -27,6 +35,8 @@ def bundle(output):
             # Chocolatey's PATH entries can be shims pointing outside the package.
             installed = pathlib.Path(os.environ.get("ChocolateyInstall", r"C:\ProgramData\chocolatey")) / "lib" / "ffmpeg"
             source = next(p for p in installed.rglob(name + ".exe") if p.stat().st_size > 1024 * 1024)
+        if name == "ffmpeg":
+            require_encoders(source)
         destination = output / (name + (".exe" if sys.platform == "win32" else ".bin" if sys.platform.startswith("linux") else ""))
         shutil.copy2(source, destination)
         destination.chmod(0o755)
