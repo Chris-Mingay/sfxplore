@@ -27,7 +27,9 @@ Never move a release tag to a different commit. CI rejects a tag that does not m
 
 ## Build and review
 
-The existing desktop workflow builds Windows x64, Linux x64, Mac Intel, and Mac Apple Silicon. Each platform runs unit tests and Godot interaction smoke tests, exports the app, and smoke-tests the exported executable before archiving it.
+The desktop workflow runs for pull requests, release tags matching `v*`, and manual dispatches. Ordinary branch pushes do not trigger it, avoiding duplicate builds when a commit and its release tag are pushed together. Changes pushed directly to the default branch are verified by the next release tag or a manual run.
+
+The workflow builds Windows x64, Linux x64, Mac Intel, and Mac Apple Silicon. Each platform runs unit tests and Godot interaction smoke tests, exports the app, and smoke-tests the exported executable before archiving it.
 
 Archives contain the complete package, `VERSION`, `CHANGELOG.md`, and `build-info.json` with its version, Git commit, and architecture. Tar archives preserve Linux/Mac executable permissions and bundle links through GitHub artifact storage.
 

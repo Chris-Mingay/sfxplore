@@ -1,6 +1,8 @@
 name: Build and verify desktop apps
 on:
   push:
+    tags:
+      - 'v*'
   pull_request:
   workflow_dispatch:
 permissions:
