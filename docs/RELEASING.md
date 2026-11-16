@@ -9,7 +9,7 @@
 3. Set an environment variable **ITCH_TARGET** to your lower-case itch slug, for example `your-account/sfxplore`. The itch project must already exist.
 4. Run `butler login` locally. Add the resulting Butler/wharf credential as the environment secret **BUTLER_API_KEY**. Do not commit it. See [Butler authentication](https://itch.io/docs/butler/login.html).
 
-The build workflow needs permission to create draft releases. It requests `contents: write` only for that job. The publish workflow only needs to read GitHub releases and workflow runs; its itch credential is available only in the production environment.
+The build workflow requests `contents: write` only for its draft-release job. The production publish job also requires `contents: write`: GitHub only exposes draft releases to tokens with push access, even when downloading their assets. It retains `actions: read` to verify the source workflow run and leaves the GitHub release as a draft. Its itch credential is available only in the production environment.
 
 ## Prepare a release
 
@@ -44,6 +44,8 @@ Wait for the entire build workflow to succeed. Download and launch the package f
 1. Open **Actions → Publish tested release to itch.io → Run workflow** on the default branch.
 2. Enter the existing tag, for example `v0.2.0`.
 3. If configured, approve the `itch-production` environment deployment.
+
+If a previous run failed with `release not found` while the draft exists, check that the publish job has `contents: write`. After a workflow fix, start a new manual run from the default branch with the same release tag; re-running an old failed run uses its original workflow definition.
 
 The action downloads the draft/existing release's archives without rebuilding them. It checks the tag's commit, successful source build, all four checksums, and embedded build identities before making any upload. It extracts Windows ZIP and Linux/Mac tar packages before uploading; older releases with Windows `.tar.gz` packages remain supported. Butler pushes the complete packages with `--userversion X.Y.Z` to these permanent channels:
 
