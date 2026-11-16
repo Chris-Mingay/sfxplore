@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.5
+
 - Package Windows releases as ZIP while retaining tar archives for Linux/Mac and supporting existing Windows tar releases in the publisher.
 
 ## 0.2.4
