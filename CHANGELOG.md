@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.2.1
+
+- Fix CI discovery of the official Linux Godot executable.
+- Report missing or ambiguous editor binaries with useful diagnostics.
+- Fix a variable shadowing the release packager after ZIP extraction and SDK staging.
+- Select the Mac app executable explicitly for packaged smoke tests.
+
 ## 0.2.0
 
 - Arrange multiple sound-effect clips on each mix track.

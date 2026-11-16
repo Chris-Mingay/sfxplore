@@ -10,7 +10,7 @@ import zipfile
 
 from bundle_audio_tools import bundle
 from version import synchronize
-from release import package
+from release import package as package_release
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -27,6 +27,18 @@ def call(*args):
     subprocess.run([str(a) for a in args], check=True)
 
 
+def find_engine(editor, rid):
+    patterns = ("*_console.exe", "*.console.exe") if rid == "win-x64" else ("Contents/MacOS/Godot",) if rid.startswith("osx-") else ("Godot*_linux.x86_64", "Godot*_linux_x86_64")
+    for pattern in patterns:
+        matches = sorted(p for p in editor.rglob(pattern) if p.is_file())
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RuntimeError(f"Multiple Godot executables in {editor}: {matches}")
+    files = sorted(str(p.relative_to(editor)) for p in editor.rglob("*") if p.is_file())
+    raise RuntimeError(f"Godot executable for {rid} not found in {editor}. Extracted files: {files[:25]}")
+
+
 def main():
     synchronize(check=True)
     work = ROOT / ".tools"
@@ -36,16 +48,16 @@ def main():
         urllib.request.urlretrieve(f"https://godot-releases.nbg1.your-objectstorage.com/{VERSION}/{FILENAME}", archive)
     editor = work / "editor"
     editor.mkdir(exist_ok=True)
-    with zipfile.ZipFile(archive) as package:
-        package.extractall(editor)
-    pattern = "*_console.exe" if WINDOWS else "Godot" if MAC else "Godot*_x86_64"
-    engine = next(p for p in editor.rglob(pattern) if p.is_file())
+    with zipfile.ZipFile(archive) as editor_zip:
+        editor_zip.extractall(editor)
+    engine = find_engine(editor, RID)
+    print(f"Godot editor: {engine}", flush=True)
     if not WINDOWS:
         engine.chmod(0o755)
     feed = work / "nuget"
     feed.mkdir(exist_ok=True)
-    for package in editor.rglob("*.nupkg"):
-        shutil.copy2(package, feed / package.name)
+    for nupkg in editor.rglob("*.nupkg"):
+        shutil.copy2(nupkg, feed / nupkg.name)
     tools = ROOT / "tools" / "ffmpeg" / RID
     bundle(tools)
     os.environ["SOUNDSHELF_AUDIO_TOOLS"] = str(tools)
@@ -76,11 +88,11 @@ def main():
     shutil.copytree(tools, package_root / "tools" / "ffmpeg" / RID, dirs_exist_ok=True)
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output)
     shutil.copy2(ROOT / "README.md", output)
-    executable = next(package_root.glob("SFXplore*")) if MAC else destination
+    executable = package_root / "SFXplore" if MAC else destination
     executable.chmod(0o755)
     call(executable, "--headless", "--", "--smoke-test", "--exercise-tag-filter", "--exercise-zoom", "--exercise-folders", "--exercise-ui", "--exercise-library-export", f"--data-dir={ROOT / 'artifacts' / 'demo-profile'}")
     print(f"Verified package: {output}")
-    print(f"Release archive: {package(output, RID)}")
+    print(f"Release archive: {package_release(output, RID)}")
 
 
 if __name__ == "__main__":
