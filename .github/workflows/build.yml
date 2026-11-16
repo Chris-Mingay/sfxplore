@@ -56,7 +56,9 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: SFXplore-${{ matrix.rid }}
-          path: dist/SFXplore-*.tar.gz
+          path: |
+            dist/SFXplore-*.zip
+            dist/SFXplore-*.tar.gz
           if-no-files-found: error
           retention-days: 90
       - uses: actions/upload-artifact@v6

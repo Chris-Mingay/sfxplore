@@ -33,7 +33,7 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo 'Expected a stable vX.Y.Z tag'; exit 1; }
           commit=$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")
           echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
-          gh release download "$RELEASE_TAG" --dir release-assets --pattern 'SFXplore-*.tar.gz' --pattern release-manifest.json
+          gh release download "$RELEASE_TAG" --dir release-assets --pattern 'SFXplore-*.zip' --pattern 'SFXplore-*.tar.gz' --pattern release-manifest.json
           run_id=$(python -c 'import json; print(int(json.load(open("release-assets/release-manifest.json"))["run_id"]))')
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > build-run.json
           python scripts/release.py verify release-assets --tag "$RELEASE_TAG" --commit "$commit" --run-info build-run.json --repository "$GITHUB_REPOSITORY"

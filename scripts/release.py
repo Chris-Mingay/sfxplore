@@ -8,6 +8,7 @@ import re
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 
 from version import ROOT, read_version
 
@@ -15,7 +16,8 @@ CHANNELS = {"win-x64": "windows", "linux-x64": "linux", "osx-x64": "mac-intel", 
 
 
 def archive_name(version, rid):
-    return f"SFXplore-{version}-{rid}.tar.gz"
+    extension = "zip" if rid == "win-x64" else "tar.gz"
+    return f"SFXplore-{version}-{rid}.{extension}"
 
 
 def checksum(path):
@@ -31,8 +33,14 @@ def package(output, rid):
     for name in ("VERSION", "CHANGELOG.md"):
         (output / name).write_bytes((ROOT / name).read_bytes())
     archive = output.parent / archive_name(version, rid)
-    with tarfile.open(archive, "w:gz") as tar:
-        tar.add(output, arcname="SFXplore")
+    if rid == "win-x64":
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
+            zipped.write(output, "SFXplore")
+            for path in sorted(output.rglob("*")):
+                zipped.write(path, (pathlib.PurePosixPath("SFXplore") / path.relative_to(output).as_posix()).as_posix())
+    else:
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(output, arcname="SFXplore")
     return archive
 
 
@@ -58,8 +66,12 @@ def verify(directory, tag, commit, run, repository):
     if set(data["assets"]) != set(CHANNELS):
         raise ValueError("Release must contain all four desktop builds")
     for rid, asset in data["assets"].items():
-        expected = archive_name(data["version"], rid)
-        if asset["file"] != expected or checksum(directory / expected) != asset["sha256"]:
+        expected = {archive_name(data["version"], rid)}
+        if rid == "win-x64":
+            # Existing tested releases used tar for Windows. They remain publishable
+            # without rebuilding or replacing their immutable release assets.
+            expected.add(f"SFXplore-{data['version']}-{rid}.tar.gz")
+        if asset["file"] not in expected or checksum(directory / asset["file"]) != asset["sha256"]:
             raise ValueError(f"Release archive checksum mismatch: {rid}")
     return data
 
@@ -74,8 +86,17 @@ def publish(directory, data, target):
         packages = []
         for rid, channel in CHANNELS.items():
             destination = pathlib.Path(temporary) / rid
-            with tarfile.open(directory / data["assets"][rid]["file"]) as tar:
-                tar.extractall(destination, filter="data")
+            archive = directory / data["assets"][rid]["file"]
+            if archive.suffix == ".zip":
+                with zipfile.ZipFile(archive) as zipped:
+                    for entry in zipped.infolist():
+                        path = pathlib.PurePosixPath(entry.filename)
+                        if path.is_absolute() or ".." in path.parts or "\\" in entry.filename or ":" in entry.filename or not path.parts or path.parts[0] != "SFXplore":
+                            raise ValueError(f"Unsafe ZIP entry: {entry.filename}")
+                    zipped.extractall(destination)
+            else:
+                with tarfile.open(archive) as tar:
+                    tar.extractall(destination, filter="data")
             package_root = destination / "SFXplore"
             info = json.loads((package_root / "build-info.json").read_text(encoding="utf-8"))
             if info != {"version": data["version"], "commit": data["commit"], "rid": rid}:

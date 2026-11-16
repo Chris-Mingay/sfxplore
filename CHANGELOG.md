@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Package Windows releases as ZIP while retaining tar archives for Linux/Mac and supporting existing Windows tar releases in the publisher.
+
 ## 0.2.4
 
 - Generate Intel and Apple Silicon export templates from the official universal macOS binaries.

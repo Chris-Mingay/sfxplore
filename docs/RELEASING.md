@@ -33,7 +33,7 @@ The workflow builds Windows x64, Linux x64, Mac Intel, and Mac Apple Silicon. Ea
 
 The template fetcher preserves the official universal macOS archive and derives separate Intel/Apple Silicon templates from its Mach-O slices. This supplies the architecture-specific filenames Godot's exporter expects while keeping each package aligned with its .NET runtime and audio-tool architecture.
 
-Archives contain the complete package, `VERSION`, `CHANGELOG.md`, and `build-info.json` with its version, Git commit, and architecture. Tar archives preserve Linux/Mac executable permissions and bundle links through GitHub artifact storage.
+Archives contain the complete package, `VERSION`, `CHANGELOG.md`, and `build-info.json` with its version, Git commit, and architecture. Windows packages use ZIP; Linux and Mac packages use `.tar.gz` to preserve executable permissions and bundle links through GitHub artifact storage. Download the Windows ZIP directly from the draft release for a single extraction. Actions artifact downloads have an additional GitHub-generated ZIP wrapper.
 
 When all four tagged builds succeed, CI creates a **draft GitHub release** with the archives, changelog notes, and `release-manifest.json` recording their SHA-256 checksums and originating workflow run. These release assets retain the packages independently of the temporary Actions artifacts (90-day retention).
 
@@ -45,7 +45,7 @@ Wait for the entire build workflow to succeed. Download and launch the package f
 2. Enter the existing tag, for example `v0.2.0`.
 3. If configured, approve the `itch-production` environment deployment.
 
-The action downloads the draft/existing release's archives without rebuilding them. It checks the tag's commit, successful source build, all four checksums, and embedded build identities before making any upload. Butler pushes the complete packages with `--userversion X.Y.Z` to these permanent channels:
+The action downloads the draft/existing release's archives without rebuilding them. It checks the tag's commit, successful source build, all four checksums, and embedded build identities before making any upload. It extracts Windows ZIP and Linux/Mac tar packages before uploading; older releases with Windows `.tar.gz` packages remain supported. Butler pushes the complete packages with `--userversion X.Y.Z` to these permanent channels:
 
 | Architecture | itch channel |
 | --- | --- |
