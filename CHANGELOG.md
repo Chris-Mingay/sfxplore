@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.3
+
+- Resolve macOS FFmpeg dependencies using Mach-O run paths, including transitive Homebrew WebP libraries.
+- Handle loader-relative and executable-relative paths while keeping bundled libraries relocatable.
+- Skip dylib identifiers during dependency traversal and retain collision checks and code signing.
+
 ## 0.2.2
 
 - Normalize older FFmpeg's float WAV headers for Godot compatibility without changing audio samples.

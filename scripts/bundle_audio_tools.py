@@ -21,6 +21,92 @@ def require_encoders(executable):
         raise RuntimeError(f"FFmpeg is missing required encoders: {', '.join(sorted(missing))}. On macOS install ffmpeg-full and put its bin directory first on PATH.")
 
 
+def macho_load_commands(source):
+    """Read search paths and the library's own ID (which is not a dependency)."""
+    command = None
+    rpaths, identity = [], None
+    for line in run("otool", "-l", str(source)).splitlines():
+        line = line.strip()
+        if line.startswith("cmd "):
+            command = line[4:]
+        elif command == "LC_RPATH" and line.startswith("path "):
+            rpaths.append(line[5:].rsplit(" (offset ", 1)[0])
+        elif command == "LC_ID_DYLIB" and line.startswith("name "):
+            identity = line[5:].rsplit(" (offset ", 1)[0]
+    return rpaths, identity
+
+
+def expand_macho_path(reference, source, executable):
+    for token, directory in (("@loader_path", source.parent), ("@executable_path", executable.parent)):
+        if reference == token or reference.startswith(token + "/"):
+            return directory / reference[len(token):].lstrip("/")
+    if reference.startswith("@"):
+        raise RuntimeError(f"Unsupported library path {reference} in {source}")
+    path = pathlib.Path(reference)
+    if not path.is_absolute():
+        raise RuntimeError(f"Non-absolute library path {reference} in {source}")
+    return path
+
+
+def macho_search_paths(rpaths, source, executable, inherited):
+    paths = []
+    for reference in rpaths:
+        if reference.startswith("@rpath/"):
+            paths.extend(parent / reference[len("@rpath/"):] for parent in inherited)
+        else:
+            paths.append(expand_macho_path(reference, source, executable))
+    # dyld searches the current loader and then the chain that loaded it.
+    return tuple(dict.fromkeys(path.resolve() for path in (*paths, *inherited)))
+
+
+def resolve_macho_dependency(reference, source, executable, search_paths):
+    if reference.startswith("@rpath/"):
+        candidates = [directory / reference[len("@rpath/"):] for directory in search_paths]
+    else:
+        candidates = [expand_macho_path(reference, source, executable)]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise RuntimeError(f"Unresolved library reference {reference} in {source}. Searched: {[str(p) for p in candidates]}")
+
+
+def bundle_macos(binaries, output):
+    libdir = output / "lib"
+    libdir.mkdir(exist_ok=True)
+    # Keep the original executable and loader search stack for transitive @rpath references.
+    pending = [(source, target, source, ()) for source, target in binaries]
+    copied, modified = {}, []
+    while pending:
+        source, target, executable, inherited = pending.pop()
+        modified.append(target)
+        rpaths, identity = macho_load_commands(source)
+        search_paths = macho_search_paths(rpaths, source, executable, inherited)
+        for line in run("otool", "-L", str(source)).splitlines()[1:]:
+            if not line[:1].isspace():
+                continue  # Ignore additional architecture headings in universal binaries.
+            dependency = line.strip().split(" (", 1)[0]
+            if dependency == identity or dependency.startswith(("/System/", "/usr/lib/")):
+                continue
+            path = resolve_macho_dependency(dependency, source, executable, search_paths)
+            if path == source or str(path).startswith(("/System/", "/usr/lib/")):
+                continue
+            if path not in copied:
+                dest = libdir / path.name
+                if dest.exists():
+                    raise RuntimeError(f"Library name collision: {dest}")
+                shutil.copy2(path, dest)
+                dest.chmod(0o755)
+                copied[path] = dest
+                pending.append((path, dest, executable, search_paths))
+            dest = copied[path]
+            reference = "@loader_path/" + ("lib/" if target.parent == output else "") + dest.name
+            subprocess.run(["install_name_tool", "-change", dependency, reference, str(target)], check=True)
+        if target.parent == libdir:
+            subprocess.run(["install_name_tool", "-id", "@loader_path/" + target.name, str(target)], check=True)
+    for target in modified:
+        subprocess.run(["codesign", "--force", "--sign", "-", str(target)], check=True)
+
+
 def bundle(output):
     output = pathlib.Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -71,38 +157,7 @@ def bundle(output):
             if path.parent.name.startswith(("ffmpeg", "libav", "libsw", "libvorbis", "libogg")):
                 shutil.copy2(path, notices / (path.parent.name + "-copyright"))
     elif sys.platform == "darwin":
-        libdir = output / "lib"
-        libdir.mkdir(exist_ok=True)
-        pending = list(binaries)
-        copied = {}
-        modified = []
-        while pending:
-            source, target = pending.pop()
-            modified.append(target)
-            for line in run("otool", "-L", str(source)).splitlines()[1:]:
-                dependency = line.strip().split(" (", 1)[0]
-                if dependency.startswith(("/System/", "/usr/lib/")):
-                    continue
-                path = pathlib.Path(dependency.replace("@loader_path", str(source.parent)))
-                if not path.is_absolute():
-                    raise RuntimeError(f"Unresolved library reference {dependency} in {source}")
-                path = path.resolve()
-                if path == source:
-                    continue
-                dest = libdir / path.name
-                if path not in copied:
-                    if dest.exists():
-                        raise RuntimeError(f"Library name collision: {dest}")
-                    shutil.copy2(path, dest)
-                    dest.chmod(0o755)
-                    copied[path] = dest
-                    pending.append((path, dest))
-                reference = "@loader_path/" + ("lib/" if target.parent == output else "") + dest.name
-                subprocess.run(["install_name_tool", "-change", dependency, reference, str(target)], check=True)
-            if target.parent == libdir:
-                subprocess.run(["install_name_tool", "-id", "@loader_path/" + target.name, str(target)], check=True)
-        for target in modified:
-            subprocess.run(["codesign", "--force", "--sign", "-", str(target)], check=True)
+        bundle_macos(binaries, output)
     records["sha256"] = {str(path.relative_to(output)): hashlib.file_digest(path.open("rb"), "sha256").hexdigest() for path in output.rglob("*") if path.is_file()}
     (output / "BUILD-INFO.json").write_text(json.dumps(records, indent=2))
 
