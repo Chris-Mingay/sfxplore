@@ -1,0 +1,12 @@
+Mode: built-in image generation.
+Final edit: remove only the subtitle "Browse. Tag. Mix."; preserve the SFXplore title, artwork, colors and composition, and reconstruct the dark background where the subtitle was.
+The master was resized to 630 x 500 with high-quality bicubic resampling for upload.
+
+Use case: ads-marketing.
+Asset type: finished itch.io cover image for the desktop sound effects browser SFXplore.
+Create one polished cover, landscape 1260 x 1000 pixels (aspect ratio 1.26:1), composed to remain legible at 315 x 250.
+Brand context: SFXplore is a desktop tool to browse, tag, preview and layer local sound effects, with a dark charcoal interface, sky-blue waveforms, purple pitch lines, yellow volume curves and small orange handles.
+Design: refined graphic poster, dark charcoal/navy background with restrained depth and very subtle fine texture. Large, exceptionally legible white/ice-blue sans serif title in upper third, exact capitalization "SFXplore" (S F X p l o r e). Under the title, smaller but readable exact subtitle "Browse. Tag. Mix."
+Hero visual in lower two thirds: three overlapping, beautifully composed audio waveform strips, offset like clips on a multitrack timeline, with crisp luminous cyan waveforms and a smooth warm-yellow volume curve with two orange control points; one restrained violet accent line. A few subtly outlined sound-library tiles or a folder motif can connect browsing to mixing. Emphasize elegant audio-tool identity and clarity, not a busy interface. Use generous spacing and strong silhouette. Main title and all critical content stay within a 9% safe margin.
+Style: premium indie creative-software cover, crisp graphic design, considered typography, confident hierarchy, subtle light, professional and inviting. Finished artwork extends to all four edges. No device mockup, no fake app screenshot, no people, no headphones, no microphone, no stock music notes, no extra text, no watermark, no third-party logos, no border.
+

@@ -47,6 +47,8 @@ class EngineDiscoveryTests(unittest.TestCase):
             (root / "tools" / "ffmpeg" / ci_build.RID).mkdir(parents=True)
             for name in ("README.md", "THIRD_PARTY_NOTICES.md"):
                 (root / name).touch()
+            license_text = "MIT License\n\nCopyright (c) 2026 Chris Mingay\n"
+            (root / "LICENSE").write_text(license_text, encoding="utf-8")
             with patch.object(ci_build, "ROOT", root), patch.object(ci_build, "MAC", False), \
                     patch.object(ci_build, "synchronize"), patch.object(ci_build, "find_engine", return_value=engine), \
                     patch.object(ci_build, "bundle"), patch.object(ci_build, "call"), \
@@ -56,6 +58,7 @@ class EngineDiscoveryTests(unittest.TestCase):
                 (output / ("SFXplore.exe" if ci_build.WINDOWS else "SFXplore.x86_64")).touch()
                 ci_build.main()
                 package.assert_called_once_with(output, ci_build.RID)
+                self.assertEqual(license_text, (output / "LICENSE").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

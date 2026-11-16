@@ -27,6 +27,8 @@ Never move a release tag to a different commit. CI rejects a tag that does not m
 
 ## Build and review
 
+Every desktop package includes SFXplore's MIT `LICENSE` (copyright 2026 Chris Mingay) and `THIRD_PARTY_NOTICES.md`. Bundled dependencies retain their own licenses.
+
 The desktop workflow runs for pull requests, release tags matching `v*`, and manual dispatches. Ordinary branch pushes do not trigger it, avoiding duplicate builds when a commit and its release tag are pushed together. Changes pushed directly to the default branch are verified by the next release tag or a manual run.
 
 The workflow builds Windows x64, Linux x64, Mac Intel, and Mac Apple Silicon. Each platform runs unit tests and Godot interaction smoke tests, exports the app, and smoke-tests the exported executable before archiving it.

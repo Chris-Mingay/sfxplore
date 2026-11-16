@@ -88,6 +88,7 @@ def main():
     shutil.copytree(tools, package_root / "tools" / "ffmpeg" / RID, dirs_exist_ok=True)
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", output)
     shutil.copy2(ROOT / "README.md", output)
+    shutil.copy2(ROOT / "LICENSE", output)
     executable = package_root / "SFXplore" if MAC else destination
     executable.chmod(0o755)
     call(executable, "--headless", "--", "--smoke-test", "--exercise-tag-filter", "--exercise-zoom", "--exercise-folders", "--exercise-ui", "--exercise-library-export", f"--data-dir={ROOT / 'artifacts' / 'demo-profile'}")

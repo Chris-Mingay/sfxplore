@@ -61,6 +61,12 @@ The decoded PCM cache is disk-backed and memory-mapped. Old PCM entries are prun
 
 The app version comes from `VERSION`. Run `python scripts/version.py` after changing it and record changes in `CHANGELOG.md`. Tags such as `v0.2.0` create tested desktop packages and a draft GitHub release. A separate manual **Publish tested release to itch.io** action uploads those exact packages. See [release setup and instructions](docs/RELEASING.md).
 
+## License
+
+SFXplore is licensed under the [MIT License](LICENSE). Copyright (c) 2026 Chris Mingay.
+
+Third-party components retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Release packages include both documents.
+
 ## Verification
 
 ```powershell

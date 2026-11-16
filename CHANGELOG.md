@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- License SFXplore under MIT, copyright 2026 Chris Mingay, and include the license in desktop release packages and itch.io listing copy.
+
 - Fix itch publishing access to tested draft-release assets by granting the production job the required GitHub contents permission.
 
 ## 0.2.5

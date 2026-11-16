@@ -1,0 +1,49 @@
+TITLE
+SFXplore
+
+SHORT DESCRIPTION
+Browse, tag and preview your sound effects. Layer them into custom mixes and export straight back to your library.
+
+FULL DESCRIPTION
+Find the right sound. Make it your own.
+
+SFXplore is a desktop sound effects browser with a built-in mixer, made for game developers and sound designers working with their own audio collections.
+
+Bring your sound folders together, preview effects as you browse, and use colored tags to keep useful sounds within reach. When one sound isn't enough, drag a few into the mix drawer, shape the layers, and export a new effect for your project.
+
+EXPLORE YOUR COLLECTION
+• Add local folders and browse their subfolders, or search across all your libraries.
+• Preview WAV, OGG and MP3 files without opening a separate audio editor.
+• Organize sounds with colored tags and combine multiple tag filters.
+• Navigate with the keyboard, reveal files in your file explorer, or copy a sound to your project folder.
+• Rescan when your collection changes and review what was added, changed or removed.
+
+BUILD SOMETHING NEW
+• Drag sounds onto a timeline with multiple tracks and clips.
+• Move and trim clips, adjust volume, and shift pitch up or down by as much as two octaves. Pitch changes also affect playback speed and length.
+• Shape fade-ins and fade-outs with editable volume curves and a choice of easing methods.
+• Balance layers with track volume and master gain; mute tracks or audition individual clips and tracks.
+• Undo and redo edits, and organize saved mixes in folders. Mix edits save automatically.
+
+EXPORT AND KEEP CREATING
+Export your mix as WAV or OGG at 48 kHz stereo. Save it to a project folder, or export directly into a sound library and have it indexed immediately.
+
+YOUR ORIGINALS STAY INTACT
+Trimming, pitch changes and volume edits happen inside the mix. SFXplore never edits your original audio files.
+
+GETTING STARTED
+Launch SFXplore, choose Add library, select a folder of sounds, and scan it. Click a sound to preview it. Open the Mix drawer and drag sounds onto the timeline to start building an effect.
+
+Bring your own audio collection. Screenshots show an illustrative demo library.
+
+LICENSE
+SFXplore is licensed under the MIT License. Copyright (c) 2026 Chris Mingay. The full license is included with the download. Bundled third-party components retain their own licenses; see THIRD_PARTY_NOTICES.md in the download.
+
+WINDOWS DOWNLOAD / INSTALL INSTRUCTIONS
+Extract the entire archive and run SFXplore.exe. Keep the executable, its data_SFXplore_* directory and the tools folder together. The standalone build does not require the Godot editor.
+
+OPTIONAL TECHNICAL DETAILS
+Import / preview: WAV, OGG and MP3.
+Mix export: WAV (32-bit float) or OGG (Vorbis), 48 kHz stereo.
+Library catalog, tags and mixes are stored locally.
+Rescan folders to update the catalog; automatic folder watching is not currently supported.

@@ -13,5 +13,5 @@ New-Item -ItemType Directory -Force -Path $taskTools | Out-Null
 Copy-Item -LiteralPath (Join-Path $taskRoot 'tools\ffmpeg\win-x64') -Destination $taskTools -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $taskRoot 'THIRD_PARTY_NOTICES.md') -Destination $taskOutput -Force
 Copy-Item -LiteralPath (Join-Path $taskRoot 'README.md') -Destination $taskOutput -Force
-foreach ($taskDocument in @('VERSION', 'CHANGELOG.md')) { Copy-Item -LiteralPath (Join-Path $taskRoot $taskDocument) -Destination $taskOutput -Force }
+foreach ($taskDocument in @('LICENSE', 'VERSION', 'CHANGELOG.md')) { Copy-Item -LiteralPath (Join-Path $taskRoot $taskDocument) -Destination $taskOutput -Force }
 Write-Output "Standalone application: $taskOutput\SFXplore.exe"
