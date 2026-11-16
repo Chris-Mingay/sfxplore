@@ -9,6 +9,8 @@ import urllib.request
 import zipfile
 
 from bundle_audio_tools import bundle
+from version import synchronize
+from release import package
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -26,6 +28,7 @@ def call(*args):
 
 
 def main():
+    synchronize(check=True)
     work = ROOT / ".tools"
     work.mkdir(exist_ok=True)
     archive = work / FILENAME
@@ -77,6 +80,7 @@ def main():
     executable.chmod(0o755)
     call(executable, "--headless", "--", "--smoke-test", "--exercise-tag-filter", "--exercise-zoom", "--exercise-folders", "--exercise-ui", "--exercise-library-export", f"--data-dir={ROOT / 'artifacts' / 'demo-profile'}")
     print(f"Verified package: {output}")
+    print(f"Release archive: {package(output, RID)}")
 
 
 if __name__ == "__main__":

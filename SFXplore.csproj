@@ -4,6 +4,7 @@
     <AssemblyName>SFXplore</AssemblyName>
     <Title>SFXplore</Title>
     <Product>SFXplore</Product>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/VERSION').Trim())</Version>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

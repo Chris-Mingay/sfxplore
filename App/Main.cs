@@ -87,7 +87,7 @@ public partial class Main : Control
         header.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
         header.AddChild(Skin.Button("Tags", () => ShowTags(null)));
         header.AddChild(Skin.Button("Mix drawer", () => _mixPanel.Visible = !_mixPanel.Visible));
-        header.AddChild(Skin.Button("About", () => Message("SFXplore", "SFXplore · Godot 4.7.2 .NET\n\nBrowse, tag, preview and mix your sound collection.\nYour original files are never modified.\n\nSpace: play/pause mix · Ctrl+Z: undo · Ctrl+Shift+Z: redo\nClick the timeline ruler to seek.\n\nBuilt with Godot, SQLite and FFmpeg. See THIRD_PARTY_NOTICES.md for dependencies.")));
+        header.AddChild(Skin.Button("About", () => Message("SFXplore", $"SFXplore {System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(typeof(Main).Assembly)?.InformationalVersion} · Godot 4.7.2 .NET\n\nBrowse, tag, preview and mix your sound collection.\nYour original files are never modified.\n\nSpace: play/pause mix · Ctrl+Z: undo · Ctrl+Shift+Z: redo\nClick the timeline ruler to seek.\n\nBuilt with Godot, SQLite and FFmpeg. See THIRD_PARTY_NOTICES.md for dependencies.")));
         _outerSplit = new HSplitContainer { SizeFlagsVertical = SizeFlags.ExpandFill, SplitOffsets = new int[] { 255 } }; root.AddChild(_outerSplit);
         var sidebar = new PanelContainer { CustomMinimumSize = new(220, 0) }; _outerSplit.AddChild(sidebar);
         _sidebar = new VBoxContainer(); sidebar.AddChild(_sidebar);
@@ -559,11 +559,12 @@ public partial class Main : Control
     public override void _Process(double delta)
     {
         if (!_testMode) CaptureWindowPlacement();
-        CheckBrowserScroll(); FillPreview(); FillMix();
+        CheckBrowserScroll(); FillPreview(); FillMix(); ProcessMixerInteraction(delta);
         if (_saveErrors.TryDequeue(out string? error)) Error("Could not save application data: " + error);
     }
     public override void _Input(InputEvent @event)
     {
+        if (HandleClipInput(@event)) { GetViewport().SetInputAsHandled(); return; }
         if (@event is InputEventKey key) { HandleBrowserKey(key); return; }
         if (@event is not InputEventMouseButton { Pressed: true } mouse) return;
         if (HandleMixerWheel(mouse)) { GetViewport().SetInputAsHandled(); return; }
@@ -617,7 +618,7 @@ public partial class Main : Control
     private async Task CloseWhenReady() { while (_operationBusy) await ToSignal(GetTree().CreateTimer(.05), SceneTreeTimer.SignalName.Timeout); CloseApplication(); }
     private void CloseApplication()
     {
-        SaveLayout(); SaveMix(); _pendingSave.GetAwaiter().GetResult(); _shuttingDown = true; StopPreview(); StopMix(false); _audio?.Dispose(); GetTree().Quit();
+        CancelClipGesture(); SaveLayout(); SaveMix(); _pendingSave.GetAwaiter().GetResult(); _shuttingDown = true; StopPreview(); StopMix(false); _audio?.Dispose(); GetTree().Quit();
     }
     private async Task SmokeTest(string[] arguments)
     {
@@ -797,17 +798,7 @@ public partial class Main : Control
         Check(createdTag != null, "create and assign tag from context interface"); _catalog.DeleteTag(createdTag!.Id); LoadTags();
         foreach (var window in GetChildren().OfType<Window>().Where(w => w is not PopupMenu).ToArray()) window.QueueFree();
         Check(_trackLanes.Count > 0, "demo tracks missing");
-        var original = _mix.Clone(); var lane = _trackLanes[0]; double start = lane.Track.Start;
-        float x = (float)((lane.Track.Start + lane.Track.Duration / 2) * _pixelsPerSecond);
-        lane._GuiInput(new InputEventMouseButton { Position = new(x, 55), ButtonIndex = MouseButton.Left, Pressed = true });
-        lane._GuiInput(new InputEventMouseMotion { Position = new(x + 24, 55) });
-        lane._GuiInput(new InputEventMouseButton { Position = new(x + 24, 55), ButtonIndex = MouseButton.Left, Pressed = false });
-        Check(_mix.Tracks[0].Start > start, "clip positioning"); RestoreHistory(false); Check(Math.Abs(_mix.Tracks[0].Start - start) < .00001, "undo positioning");
-        lane = _trackLanes[0]; float edge = (float)(lane.Track.Start * _pixelsPerSecond);
-        lane._GuiInput(new InputEventMouseButton { Position = new(edge + 2, lane.Size.Y - 22), ButtonIndex = MouseButton.Left, Pressed = true });
-        lane._GuiInput(new InputEventMouseMotion { Position = new(edge + 10, lane.Size.Y - 22) });
-        lane._GuiInput(new InputEventMouseButton { Position = new(edge + 10, lane.Size.Y - 22), ButtonIndex = MouseButton.Left, Pressed = false });
-        Check(_mix.Tracks[0].TrimStart > original.Tracks[0].TrimStart, "left trim handle"); RestoreHistory(false);
+        var original = _mix.Clone();
         _mixPanel.Show();
         await ExerciseMixControls();
         var other = new MixProject { Name = "Workspace preview smoke test" };

@@ -57,22 +57,45 @@ public partial class Main
         if (_operationBusy) { Error("Wait for the current operation to finish."); return; }
         if (!File.Exists(sound.FullPath)) { Error("The source sound is unavailable. Rescan the library to refresh its contents."); return; }
         string extension = Path.GetExtension(sound.FullPath);
-        var dialog = CreateSaveDialog("Copy sound to", Path.GetFileName(sound.FullPath), LastCopyDirectory, Path.GetDirectoryName(sound.FullPath));
+        bool sourceOgg = extension.Equals(".ogg", StringComparison.OrdinalIgnoreCase);
+        bool chooseFormat = sourceOgg || extension.Equals(".wav", StringComparison.OrdinalIgnoreCase);
+        string suggested = chooseFormat ? Path.GetFileNameWithoutExtension(sound.FullPath) : Path.GetFileName(sound.FullPath);
+        var dialog = CreateSaveDialog("Copy sound to", suggested, LastCopyDirectory, Path.GetDirectoryName(sound.FullPath));
+        const string formatOption = "Audio format";
+        if (chooseFormat) dialog.AddOption(formatOption, new[] { "WAV", "OGG" }, sourceOgg ? 1 : 0);
+
         ShowSaveDialog(dialog, path =>
         {
-            string target = path.EndsWith(extension, StringComparison.OrdinalIgnoreCase) ? path : path + extension;
-            SaveToChosenPath(path, target, overwrite => _ = Guard(() => CopySound(sound, target, overwrite)));
+            bool convert = false;
+            string target = path;
+            if (chooseFormat)
+            {
+                bool copyOgg = dialog.GetSelectedOptions().TryGetValue(formatOption, out var selected) ? (int)selected == 1 : sourceOgg;
+                convert = copyOgg != sourceOgg;
+                string fullPath = Path.GetFullPath(path);
+                target = Path.Combine(Path.GetDirectoryName(fullPath)!, ExportDestination.FileName(Path.GetFileName(fullPath), copyOgg));
+            }
+            else if (!path.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+            {
+                target += extension;
+            }
+            SaveToChosenPath(path, target, overwrite => _ = Guard(() => CopySound(sound, target, overwrite, convert)));
         });
     }
 
-    private async Task CopySound(Sound sound, string destination, bool overwrite)
+    private async Task CopySound(Sound sound, string destination, bool overwrite, bool convert)
     {
         if (_operationBusy) throw new InvalidOperationException("Wait for the current operation to finish.");
         var cancellation = BeginOperation();
         try
         {
-            Status("Copying " + Path.GetFileName(sound.FullPath) + "…");
-            await SoundFileCopy.CopyAsync(sound.FullPath, destination, overwrite, cancellation);
+            Status((convert ? "Converting " : "Copying ") + Path.GetFileName(sound.FullPath) + "…");
+            if (convert)
+            {
+                if (_audio == null) throw new InvalidOperationException("Audio tools are unavailable. Run setup first.");
+                await SoundFileCopy.ConvertAsync(sound.FullPath, destination, overwrite, _audio.Ffmpeg, cancellation);
+            }
+            else await SoundFileCopy.CopyAsync(sound.FullPath, destination, overwrite, cancellation);
             RememberSaveDirectory(LastCopyDirectory, destination);
             Status("Copied to " + destination);
         }

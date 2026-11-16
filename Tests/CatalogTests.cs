@@ -143,10 +143,10 @@ public class CatalogTests
     public void MixAndSettingsSurviveReopeningAndLibraryRemoval()
     {
         using var w = new Workspace(); var library = w.Catalog.AddLibrary(w.DirectoryAt("library"));
-        var mix = new MixProject { Name = "Rain", Tracks = new() { new() { SourcePath = Path.Combine(library.Path, "rain.wav"), TrimStart = .2, TrimEnd = 2, SourceDuration = 3, Start = 1.5, Semitones = -3, Envelope = new() { new(.2, .5f), new(2, 0) } } } };
+        var mix = new MixProject { Name = "Rain", Tracks = new() { new() { Clips = new() { new() { SourcePath = Path.Combine(library.Path, "rain.wav"), TrimStart = .2, TrimEnd = 2, SourceDuration = 3, Start = 1.5, Semitones = -3, Envelope = new() { new(.2, .5f), new(2, 0) } } } } } };
         w.Catalog.SaveMix(mix); w.Catalog.SetSetting("layout", "wide"); w.Catalog.RemoveLibrary(library.Id);
         var reopened = new Catalog(Path.Combine(w.Root, "catalog.sqlite")); var loaded = reopened.LoadMix(mix.Id)!;
-        Assert.Equal("Rain", loaded.Name); Assert.Equal(1.5, loaded.Tracks[0].Start); Assert.Equal(2, loaded.Tracks[0].Envelope.Count); Assert.Equal("wide", reopened.GetSetting("layout")); Assert.Equal(mix.Id.ToString(), reopened.GetSetting("last_mix"));
+        Assert.Equal("Rain", loaded.Name); Assert.Equal(1.5, loaded.Tracks[0].Start); Assert.Equal(2, loaded.Tracks[0].Clips[0].Envelope.Count); Assert.Equal("wide", reopened.GetSetting("layout")); Assert.Equal(mix.Id.ToString(), reopened.GetSetting("last_mix"));
     }
 
     [Fact]
@@ -198,7 +198,7 @@ public class CatalogTests
         long projects = catalog.CreateMixFolder("Projects", null);
         long rain = catalog.CreateMixFolder("Rain", null);
         long storms = catalog.CreateMixFolder("Storms", rain);
-        var mix = new MixProject { Name = "Thunder", Tracks = new() { new() { Name = "Source", TrimEnd = 1 } } };
+        var mix = new MixProject { Name = "Thunder", Tracks = new() { new() { Name = "Source", Clips = new() { new() { TrimEnd = 1 } } } } };
         catalog.SaveMix(mix);
         catalog.MoveMix(mix.Id, storms);
         catalog.MoveMixFolder(rain, projects);

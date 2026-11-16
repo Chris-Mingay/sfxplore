@@ -7,6 +7,8 @@ $env:DOTNET_SKIP_FIRST_TIME_EXPERIENCE = '1'
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:MSBuildEnableWorkloadResolver = 'false'
 $env:NUGET_PACKAGES = Join-Path $taskRoot '.tools\packages'
+& python (Join-Path $PSScriptRoot 'version.py') --check
+if ($LASTEXITCODE -ne 0) { throw 'Version metadata is out of sync.' }
 $taskArgs = @('--nologo','-v','minimal',"-p:RestoreFallbackFolders=$env:USERPROFILE\.nuget\packages")
 if ($Offline) { $taskArgs += @("-p:RestoreSources=$taskRoot\.tools\nuget",'-p:NuGetAudit=false') }
 & dotnet build SFXplore.csproj -c $Configuration @taskArgs

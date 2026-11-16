@@ -109,18 +109,18 @@ public sealed class AudioLibrary : IDisposable
     }
     public async Task<Dictionary<string, PcmSource>> PrepareAsync(MixProject mix, CancellationToken cancel = default, bool includeMuted = false)
     {
-        var paths = (includeMuted ? mix.Tracks : mix.AudibleTracks).Select(t => t.SourcePath).Distinct().ToArray();
+        var paths = (includeMuted ? mix.Clips : mix.AudibleClips).Select(t => t.SourcePath).Distinct().ToArray();
         var result = new ConcurrentDictionary<string, PcmSource>();
         await Task.WhenAll(paths.Select(async path => { if (File.Exists(path)) result[path] = await LoadAsync(path, cancel).ConfigureAwait(false); })).ConfigureAwait(false);
         return new(result);
     }
     public async Task ExportAsync(MixProject snapshot, string destination, bool ogg, IProgress<double>? progress, CancellationToken cancel, bool overwrite = true)
     {
-        if (!snapshot.AudibleTracks.Any(t => t.Duration > 0)) throw new InvalidOperationException("Add an unmuted sound before exporting.");
-        if (snapshot.AudibleTracks.Any(t => !File.Exists(t.SourcePath))) throw new IOException("Resolve, remove, or mute the unavailable tracks before exporting.");
+        if (!snapshot.AudibleClips.Any(t => t.Duration > 0)) throw new InvalidOperationException("Add an unmuted sound before exporting.");
+        if (snapshot.AudibleClips.Any(t => !File.Exists(t.SourcePath))) throw new IOException("Resolve, remove, or mute the unavailable tracks before exporting.");
         string full = Path.Combine(Paths.CanonicalDirectory(Path.GetDirectoryName(Path.GetFullPath(destination))!), Path.GetFileName(destination));
         if (File.Exists(full)) full = new FileInfo(full).ResolveLinkTarget(true)?.FullName ?? full;
-        foreach (var track in snapshot.Tracks)
+        foreach (var track in snapshot.Clips)
         {
             if (!Directory.Exists(Path.GetDirectoryName(track.SourcePath))) continue;
             string source = Path.Combine(Paths.CanonicalDirectory(Path.GetDirectoryName(track.SourcePath)!), Path.GetFileName(track.SourcePath));
@@ -131,7 +131,8 @@ public sealed class AudioLibrary : IDisposable
         string temp = Path.Combine(Path.GetDirectoryName(full)!, ".soundshelf-" + Guid.NewGuid() + ".tmp");
         try
         {
-            using var p = Start(Ffmpeg, new[] { "-v", "error", "-y", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0", "-c:a", ogg ? "libvorbis" : "pcm_s24le", ogg ? "-q:a" : "-rf64", ogg ? "6" : "auto", "-f", ogg ? "ogg" : "wav", temp }, true);
+            // FFmpeg writes 24-bit integer PCM with an extensible header that Godot rejects.
+            using var p = Start(Ffmpeg, new[] { "-v", "error", "-y", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0", "-c:a", ogg ? "libvorbis" : "pcm_f32le", ogg ? "-q:a" : "-rf64", ogg ? "6" : "auto", "-f", ogg ? "ogg" : "wav", temp }, true);
             using var reg = cancel.Register(() => Kill(p));
             var errors = p.StandardError.ReadToEndAsync(); var output = p.StandardOutput.ReadToEndAsync();
             await Task.Run(async () =>
@@ -172,14 +173,20 @@ public sealed class AudioLibrary : IDisposable
 public sealed class MixRenderer
 {
     private static readonly ConcurrentDictionary<double, float[][]> Filters = new();
-    private sealed record Prepared(MixTrack Track, PcmSource Source, float[][] Filter);
+    private sealed record Prepared(MixClip Clip, float Gain, long EndFrame, PcmSource Source, float[][] Filter);
     private readonly Prepared[] _tracks;
     private readonly float _master;
     public bool Clipped { get; private set; }
     public MixRenderer(MixProject mix, IReadOnlyDictionary<string, PcmSource> sources)
     {
         _master = mix.MasterGain;
-        _tracks = mix.AudibleTracks.Where(t => sources.ContainsKey(t.SourcePath)).Select(t => new Prepared(t.Clone(), sources[t.SourcePath], Filters.GetOrAdd(t.Rate, Filter))).ToArray();
+        _tracks = mix.AudibleTracks.SelectMany(track =>
+        {
+            var clips = track.Clips.OrderBy(c => c.Start).ToArray();
+            return clips.Select((clip, index) => new { Clip = clip, Next = index + 1 < clips.Length ? (long)Math.Round(clips[index + 1].Start * PcmSource.SampleRate) : long.MaxValue })
+                .Where(item => sources.ContainsKey(item.Clip.SourcePath))
+                .Select(item => new Prepared(item.Clip.Clone(), track.Gain, item.Next, sources[item.Clip.SourcePath], Filters.GetOrAdd(item.Clip.Rate, Filter)));
+        }).ToArray();
     }
     // A polyphase windowed-sinc interpolator reduces aliasing when pitching upward.
     private static float[][] Filter(double rate)
@@ -216,10 +223,11 @@ public sealed class MixRenderer
         Array.Clear(destination, 0, frames * 2); Clipped = false;
         foreach (var prepared in _tracks)
         {
-            var t = prepared.Track; var source = prepared.Source; double rate = t.Rate;
+            var t = prepared.Clip; var source = prepared.Source; double rate = t.Rate;
             long start = (long)Math.Round(t.Start * PcmSource.SampleRate); double trim = t.TrimStart * PcmSource.SampleRate, end = t.TrimEnd * PcmSource.SampleRate;
             for (int f = 0; f < frames; f++)
             {
+                if (firstFrame + f >= prepared.EndFrame) break;
                 long elapsed = firstFrame + f - start; if (elapsed < 0) continue;
                 double position = trim + elapsed * rate; if (position >= end) break;
                 long index = (long)position; float left = 0, right = 0;
@@ -233,7 +241,7 @@ public sealed class MixRenderer
                         left += source.Sample(sample, 0) * weights[tap]; right += source.Sample(sample, 1) * weights[tap];
                     }
                 }
-                float gain = TrackVolume.Gain(t, position / PcmSource.SampleRate);
+                float gain = ClipVolume.Gain(t, position / PcmSource.SampleRate) * prepared.Gain;
                 destination[f * 2] += left * gain; destination[f * 2 + 1] += right * gain;
             }
         }

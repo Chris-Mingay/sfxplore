@@ -26,7 +26,7 @@ public partial class Main
     private AudioStreamPlayer _mixPlayer = null!;
     private AudioStreamGeneratorPlayback? _mixPlayback;
     private LiveMixer? _live;
-    private Guid? _soloTrackId;
+    private Guid? _soloTrackId, _soloClipId;
     private Dictionary<string, PcmSource> _prepared = new();
     private readonly Dictionary<string, float[]> _peaks = new();
     private readonly List<TrackLane> _trackLanes = new();
@@ -93,6 +93,7 @@ public partial class Main
 
     private bool HandleMixerWheel(InputEventMouseButton mouse)
     {
+        if (_clipPopup?.Visible == true && _clipPopup.GetGlobalRect().HasPoint(mouse.Position)) return false;
         if (!_mixPanel.IsVisibleInTree() || !_mixPanel.GetGlobalRect().HasPoint(mouse.Position))
         {
             return false;
@@ -151,8 +152,9 @@ public partial class Main
 
     private void SetMix(MixProject mix)
     {
+        CancelClipGesture(); HideClipPopup();
         StopMix(true);
-        _mix = mix;
+        _mix = mix; _mixGeneration++;
         _mixTitle.Text = mix.Name;
         _history.Clear();
         _expandedTracks.Clear();
@@ -178,7 +180,7 @@ public partial class Main
 
     private void SaveMix()
     {
-        if (_catalog == null || _shuttingDown)
+        if (_catalog == null || _shuttingDown || _gestureBefore != null)
         {
             return;
         }
@@ -207,7 +209,8 @@ public partial class Main
     private void MixEdited()
     {
         foreach (var sync in _syncTrackControls) sync();
-        _saveTimer.Start();
+        SyncClipPopup();
+        if (_gestureBefore == null) _saveTimer.Start();
         if (_liveUpdateTimer.IsStopped()) _liveUpdateTimer.Start();
         UpdateTimelineDimensions();
         RefreshAudibleLanes();
@@ -215,20 +218,20 @@ public partial class Main
 
     private void UpdateLiveMix()
     {
-        if (_soloTrackId is Guid id && !_mix.Tracks.Any(t => t.Id == id)) { StopMix(false); return; }
+        if (_soloTrackId is Guid id && !_mix.Tracks.Any(t => t.Id == id && (_soloClipId == null || t.Clips.Any(c => c.Id == _soloClipId)))) { StopMix(false); return; }
         if (_live != null)
         {
             _live.Update(PlaybackMix(), _prepared);
         }
     }
 
-    private MixProject PlaybackMix() => _soloTrackId is Guid id ? _mix.ForTrackPreview(id) : _mix.Clone();
+    private MixProject PlaybackMix() => _soloTrackId is Guid id ? _soloClipId is Guid clipId ? _mix.ForClipPreview(id, clipId) : _mix.ForTrackPreview(id) : _mix.Clone();
     private void RefreshAudibleLanes()
     {
         foreach (var lane in _trackLanes)
         {
             lane.Audible = _soloTrackId is Guid id ? lane.Track.Id == id : !lane.Track.Muted;
-            lane.QueueRedraw();
+            lane.SyncClips();
         }
     }
     private async Task PlayTrack(MixTrack track)
@@ -241,9 +244,11 @@ public partial class Main
 
     private void RestoreHistory(bool redo)
     {
+        CancelClipGesture();
         MixProject? mixProject = (redo ? _history.Redo(_mix) : _history.Undo(_mix));
         if (mixProject != null)
         {
+            _mixGeneration++;
             mixProject.Name = _mix.Name;
             _mix = mixProject;
             RebuildTracks();
@@ -252,36 +257,26 @@ public partial class Main
         }
     }
 
-    private async Task AddToMix(Sound sound)
+    private Task AddToMix(Sound sound) => AddSoundClip(sound.Id, sound.FullPath, null, 0);
+
+    private async Task AddSoundClip(long soundId, string path, Guid? trackId, double start)
     {
-        if (_audio == null)
-        {
-            throw new InvalidOperationException("Audio tools are unavailable.");
-        }
-        Status("Preparing " + Path.GetFileName(sound.FullPath) + "…");
-        PcmSource source = await _audio.LoadAsync(sound.FullPath);
+        if (_audio == null) throw new InvalidOperationException("Audio tools are unavailable.");
+        var destinationMix = _mix; int generation = _mixGeneration;
+        Status("Preparing " + Path.GetFileName(path) + "…");
+        var source = await _audio.LoadAsync(path);
+        var peaks = _peaks.GetValueOrDefault(path) ?? await Task.Run(() => source.Peaks());
+        if (_mix != destinationMix || generation != _mixGeneration || _shuttingDown) return;
+        if (trackId.HasValue && !_mix.Tracks.Any(t => t.Id == trackId)) return;
         _history.Capture(_mix);
-        _mix.Tracks.Add(new MixTrack
-        {
-            SoundId = sound.Id,
-            SourcePath = sound.FullPath,
-            Name = Path.GetFileName(sound.FullPath),
-            SourceDuration = source.Duration,
-            TrimEnd = source.Duration,
-            Volume = new VolumeEasing()
-        });
-        _prepared[sound.FullPath] = source;
-        if (!_peaks.ContainsKey(sound.FullPath))
-        {
-            Dictionary<string, float[]> peaks = _peaks;
-            string fullPath = sound.FullPath;
-            peaks[fullPath] = await Task.Run(() => source.Peaks());
-        }
-        _mixPanel.Show();
-        RebuildTracks();
-        MixEdited();
-        SaveMix();
-        Status("Added to mix · " + Path.GetFileName(sound.FullPath));
+        var track = trackId.HasValue ? _mix.Tracks.First(t => t.Id == trackId) : new MixTrack { Name = "Track" };
+        if (!trackId.HasValue) _mix.Tracks.Insert(0, track);
+        var clip = new MixClip { SoundId = soundId, SourcePath = path, Name = Path.GetFileName(path), Start = start,
+            SourceDuration = source.Duration, TrimEnd = source.Duration, Volume = new VolumeEasing() };
+        MixEditing.Place(_mix, track.Id, clip);
+        _prepared[path] = source; _peaks[path] = peaks;
+        _mixPanel.Show(); RebuildTracks(); MixEdited(); SaveMix();
+        Status("Added to mix · " + clip.Name);
     }
 
     private async Task PrepareWaveforms()
@@ -291,7 +286,7 @@ public partial class Main
             return;
         }
         MixProject mix = _mix;
-        foreach (string path in mix.Tracks.Select((MixTrack t) => t.SourcePath).Distinct())
+        foreach (string path in mix.Clips.Select(t => t.SourcePath).Distinct())
         {
             if (!File.Exists(path))
             {
@@ -313,10 +308,9 @@ public partial class Main
                 }
                 _prepared[path] = source;
                 _peaks[path] = peaks;
-                foreach (TrackLane lane in _trackLanes.Where((TrackLane l) => l.Track.SourcePath == path))
+                foreach (TrackLane lane in _trackLanes.Where((TrackLane l) => l.Track.Clips.Any(c => c.SourcePath == path)))
                 {
-                    lane.Peaks = peaks;
-                    lane.QueueRedraw();
+                    lane.SyncClips();
                 }
             }
             catch (Exception ex)
@@ -361,119 +355,67 @@ public partial class Main
 
     private void RebuildTracks()
     {
+        bool popupVisible = _clipPopup?.Visible == true;
         int verticalScroll = _tracksScroll.ScrollVertical, horizontalScroll = _timelineScroll.ScrollHorizontal;
         _buildingTracks = true; Skin.Clear(_trackControls); Skin.Clear(_lanes); _trackLanes.Clear(); _syncTrackControls.Clear();
         _trackControls.AddChild(new Control { CustomMinimumSize = new(0, 30) });
-        _ruler = new TimelineRuler { CustomMinimumSize = new(1200, 30), PixelsPerSecond = _pixelsPerSecond }; _lanes.AddChild(_ruler); _ruler.Seek += seconds => _ = Guard(() => SeekMix(seconds));
+        _ruler = new TimelineRuler { CustomMinimumSize = new(1200, 30), PixelsPerSecond = _pixelsPerSecond };
+        _lanes.AddChild(_ruler); _ruler.Seek += seconds => _ = Guard(() => SeekMix(seconds));
+        _newTrackSpacer = new Control { CustomMinimumSize = new(0, 52), Visible = _mixDragging };
+        _trackControls.AddChild(_newTrackSpacer);
+        _newTrackLane = CreateTrackLane(new MixTrack(), true); _newTrackLane.CustomMinimumSize = new(1200, 52);
+        _newTrackLane.Visible = _mixDragging; _lanes.AddChild(_newTrackLane);
         var speaker = GD.Load<Texture2D>("res://Assets/Icons/track-speaker.svg");
         var mutedSpeaker = GD.Load<Texture2D>("res://Assets/Icons/track-muted.svg");
-        var expandIcon = GetThemeIcon("arrow_collapsed", "Tree");
-        var collapseIcon = GetThemeIcon("arrow", "Tree");
         for (int i = 0; i < _mix.Tracks.Count; i++)
         {
-            var track = _mix.Tracks[i]; bool missing = !File.Exists(track.SourcePath);
+            var track = _mix.Tracks[i]; bool missing = track.Clips.Any(c => !File.Exists(c.SourcePath));
             var panel = new PanelContainer(); _trackControls.AddChild(panel);
-            var channel = new VBoxContainer(); channel.AddThemeConstantOverride("separation", 6); panel.AddChild(channel);
-            var nameRow = new HBoxContainer(); channel.AddChild(nameRow);
-            var disclosure = TrackHeaderToggle("TrackDisclosure", _expandedTracks.Contains(track.Id)); nameRow.AddChild(disclosure);
-            var name = Skin.Label($"{i + 1:00}  {track.Name}" + (missing ? "  [missing]" : ""), 12, missing ? new Color("edaa88") : Skin.Text); name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; name.SizeFlagsHorizontal = SizeFlags.ExpandFill; name.TooltipText = track.SourcePath; nameRow.AddChild(name);
-            var mute = TrackHeaderToggle("TrackMute", track.Muted); nameRow.AddChild(mute);
-            void SyncMute()
-            {
-                mute.Icon = track.Muted ? mutedSpeaker : speaker;
-                mute.TooltipText = mute.AccessibilityName = track.Muted ? "Unmute track" : "Mute track";
-            }
-            mute.Toggled += value =>
-            {
-                if (_buildingTracks) return;
-                _history.Capture(_mix);
-                track.Muted = value;
-                SyncMute();
-                MixEdited();
-            };
+            var channel = new VBoxContainer(); panel.AddChild(channel);
+            var row = new HBoxContainer(); channel.AddChild(row);
+            var disclosure = TrackHeaderToggle("TrackDisclosure", _expandedTracks.Contains(track.Id)); row.AddChild(disclosure);
+            var label = Skin.Label($"{i + 1:00}  {track.Name}" + (missing ? "  [missing]" : ""), 12, missing ? new Color("edaa88") : Skin.Text);
+            label.SizeFlagsHorizontal = SizeFlags.ExpandFill; label.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis; row.AddChild(label);
+            var mute = TrackHeaderToggle("TrackMute", track.Muted); row.AddChild(mute);
+            void SyncMute() { mute.Icon = track.Muted ? mutedSpeaker : speaker; mute.TooltipText = mute.AccessibilityName = track.Muted ? "Unmute track" : "Mute track"; }
+            mute.Toggled += value => { if (_buildingTracks) return; _history.Capture(_mix); track.Muted = value; SyncMute(); MixEdited(); };
             SyncMute();
-            var body = new VBoxContainer(); body.AddThemeConstantOverride("separation", 3); channel.AddChild(body);
-            var gainRow = new HBoxContainer(); body.AddChild(gainRow);
-            var gain = Number(TrackVolume.Decibels(track.Gain), -60, 12, .5, "dB", value => track.Gain = TrackVolume.FromDecibels(value), () => _ = Guard(() => PlayTrack(track)));
-            gain.Name = "TrackGain"; gain.TooltipText = "Flat / middle volume · −60 selects exact silence"; gainRow.AddChild(gain);
-            gainRow.AddChild(Skin.Button("−∞", () => { if (track.Gain == 0) return; _history.Capture(_mix); track.Gain = 0; MixEdited(); _ = Guard(() => PlayTrack(track)); }, "Set volume to exact silence"));
-            var pitchRow = new HBoxContainer(); body.AddChild(pitchRow);
-            var pitch = Number(track.Semitones, -24, 24, .1, "st", value => track.Semitones = value, () => _ = Guard(() => PlayTrack(track))); pitch.Name = "TrackPitch";
-            var start = Number(track.Start, 0, 86400, .01, "s", value => track.Start = value);
-            pitchRow.AddChild(pitch); pitchRow.AddChild(start);
-            var modeRow = new HBoxContainer(); body.AddChild(modeRow); modeRow.AddChild(Skin.Label("Volume easing", 11, Skin.Muted));
-            var mode = new OptionButton { Name = "VolumeMode", SizeFlagsHorizontal = SizeFlags.ExpandFill };
-            foreach (string text in new[] { "None", "Ease In", "Ease Out", "Both" }) mode.AddItem(text);
-            bool legacy = track.Volume == null && track.Envelope.Count > 0;
-            mode.Select(legacy ? -1 : (int)(track.Volume?.Mode ?? VolumeMode.None));
-            if (legacy) { mode.Text = "Choose easing…"; mode.TooltipText = "Saved envelope is preserved. Choosing a mode replaces it; Undo restores it."; }
-            modeRow.AddChild(mode);
-            mode.ItemSelected += index =>
-            {
-                if (_buildingTracks || track.Volume?.Mode == (VolumeMode)index) return;
-                _history.Capture(_mix); track.Volume ??= new VolumeEasing(); track.Volume.Mode = (VolumeMode)index;
-                RebuildTracks(); MixEdited(); SaveMix();
-                _ = Guard(() => PlayTrack(track));
-            };
-            void AddMethod(string title, string nodeName, EasingMethod selected, Action<EasingMethod> change)
-            {
-                var row = new HBoxContainer(); body.AddChild(row); row.AddChild(Skin.Label(title, 11, Skin.Muted));
-                var method = new OptionButton { Name = nodeName, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-                foreach (var item in Enum.GetValues<EasingMethod>()) method.AddItem(item.ToString());
-                method.Select((int)selected); row.AddChild(method);
-                method.ItemSelected += index => { if (_buildingTracks || (int)selected == index) return; _history.Capture(_mix); selected = (EasingMethod)index; change(selected); MixEdited(); _ = Guard(() => PlayTrack(track)); };
-            }
-            if (track.Volume?.HasIn == true) AddMethod("Ease In Method", "EaseInMethod", track.Volume.InMethod, value => track.Volume!.InMethod = value);
-            if (track.Volume?.HasOut == true) AddMethod("Ease Out Method", "EaseOutMethod", track.Volume.OutMethod, value => track.Volume!.OutMethod = value);
-            if (legacy) body.AddChild(Skin.Label("Saved envelope · choose easing to replace", 10, Skin.Muted));
+            var body = new VBoxContainer(); channel.AddChild(body);
+            body.AddChild(Skin.Label("Track volume", 11, Skin.Muted));
+            var gain = Number(ClipVolume.Decibels(track.Gain), -60, 12, .5, "dB", value => track.Gain = ClipVolume.FromDecibels(value));
+            gain.Name = "TrackGain"; gain.TooltipText = "Overall volume for all clips on this track"; body.AddChild(gain);
+            _syncTrackControls.Add(() => gain.SetValueNoSignal(ClipVolume.Decibels(track.Gain)));
             var actions = new HBoxContainer(); body.AddChild(actions);
-            var solo = Skin.Button("SOLO", () => _ = Guard(() => PlayTrack(track)), "Play this track from its beginning in isolation"); solo.Name = "TrackSolo"; actions.AddChild(solo);
+            var solo = Skin.Button("SOLO", () => _ = Guard(() => PlayTrack(track)), "Play every clip on this track in isolation"); solo.Name = "TrackSolo"; actions.AddChild(solo);
             actions.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-            actions.AddChild(Skin.Button("×", () => { _history.Capture(_mix); _mix.Tracks.Remove(track); RebuildTracks(); MixEdited(); SaveMix(); }, "Remove track"));
-            var lane = new TrackLane { Track = track, Audible = _soloTrackId is Guid soloId ? track.Id == soloId : !track.Muted, Peaks = _peaks.GetValueOrDefault(track.SourcePath) ?? Array.Empty<float>(), CustomMinimumSize = new(1200, CompactTrackHeight), PixelsPerSecond = _pixelsPerSecond };
-            _lanes.AddChild(lane); _trackLanes.Add(lane);
+            actions.AddChild(Skin.Button("×", () => { CancelClipGesture(); _history.Capture(_mix); _mix.Tracks.Remove(track); RebuildTracks(); MixEdited(); SaveMix(); }, "Remove track"));
+            var lane = CreateTrackLane(track); _lanes.AddChild(lane); _trackLanes.Add(lane);
             void SetExpanded(bool expanded)
             {
-                body.Visible = expanded;
-                panel.CustomMinimumSize = new(290, expanded ? ExpandedTrackHeight : CompactTrackHeight);
-                disclosure.Icon = expanded ? collapseIcon : expandIcon;
+                body.Visible = expanded; panel.CustomMinimumSize = new(290, expanded ? ExpandedTrackHeight : CompactTrackHeight);
+                disclosure.Icon = GetThemeIcon(expanded ? "arrow" : "arrow_collapsed", "Tree");
                 disclosure.TooltipText = disclosure.AccessibilityName = expanded ? "Collapse track controls" : "Expand track controls";
-                lane.Expanded = expanded;
-                lane.QueueRedraw();
+                lane.Expanded = expanded; lane.SyncClips();
             }
             panel.Resized += () => lane.CustomMinimumSize = new(lane.CustomMinimumSize.X, panel.Size.Y);
-            disclosure.Toggled += expanded =>
-            {
-                if (expanded) _expandedTracks.Add(track.Id);
-                else _expandedTracks.Remove(track.Id);
-                SetExpanded(expanded);
-            };
+            disclosure.Toggled += expanded => { if (expanded) _expandedTracks.Add(track.Id); else _expandedTracks.Remove(track.Id); SetExpanded(expanded); };
             SetExpanded(disclosure.ButtonPressed);
-            MixProject? beforeGesture = null;
-            lane.EditStarted += () => beforeGesture = _mix.Clone();
-            lane.Edited += MixEdited;
-            lane.AuditionRequested += () => _ = Guard(() => PlayTrack(track));
-            lane.EditFinished += changed => { if (changed && beforeGesture != null) _history.Capture(beforeGesture); beforeGesture = null; SaveMix(); UpdateLiveMix(); };
-            void SyncNumbers()
-            {
-                gain.SetValueNoSignal(TrackVolume.Decibels(track.Gain));
-                if (track.Gain <= 0 && !gain.GetLineEdit().HasFocus()) gain.GetLineEdit().Text = "−∞ dB";
-                pitch.SetValueNoSignal(track.Semitones); start.SetValueNoSignal(track.Start);
-            }
-            _syncTrackControls.Add(SyncNumbers); SyncNumbers();
         }
         if (_mix.Tracks.Count == 0)
         {
             _trackControls.AddChild(Skin.Label("No tracks yet", 14, Skin.Muted));
-            var empty = Skin.Label("Right-click a sound → Add to mix\n\nEach sound gets its own track. Drag clips to arrange them.", 16, Skin.Muted); empty.CustomMinimumSize = new(900, CompactTrackHeight); _lanes.AddChild(empty);
+            var empty = Skin.Label("Drag a sound into the mix to create a track.\nDrop more sounds onto a track to arrange them together.", 15, Skin.Muted);
+            empty.CustomMinimumSize = new(900, CompactTrackHeight); empty.MouseFilter = MouseFilterEnum.Ignore; _lanes.AddChild(empty);
         }
-        foreach (var node in _mixPanel.FindChildren("Master", "HSlider", true, false)) if (node is HSlider master) master.Value = _mix.MasterGain;
+        foreach (var node in _mixPanel.FindChildren("Master", "HSlider", true, false)) if (node is HSlider master) master.SetValueNoSignal(_mix.MasterGain);
         _buildingTracks = false; UpdateTimelineDimensions();
+        if (popupVisible && SelectedClip() != null) ShowClipPopup(_selectedTrackId!.Value, _selectedClipId!.Value);
+        else RefreshClipSelection();
         Callable.From(() => { _tracksScroll.ScrollVertical = verticalScroll; _timelineScroll.ScrollHorizontal = horizontalScroll; }).CallDeferred();
     }
     private void UpdateTimelineDimensions()
     {
-        double num = Math.Max(15.0, _mix.Tracks.Select((MixTrack t) => t.Start + t.Duration).DefaultIfEmpty(0.0).Max() + 3.0);
+        double num = Math.Max(15.0, _mix.TimelineDuration + 3.0);
         float x = (float)Math.Min(8000000.0, num * _pixelsPerSecond);
         if (_ruler != null)
         {
@@ -481,11 +423,11 @@ public partial class Main
             _ruler.PixelsPerSecond = _pixelsPerSecond;
             _ruler.QueueRedraw();
         }
-        foreach (TrackLane trackLane in _trackLanes)
+        foreach (TrackLane trackLane in _trackLanes.Concat(_newTrackLane == null ? Array.Empty<TrackLane>() : new[] { _newTrackLane }))
         {
             trackLane.CustomMinimumSize = new Vector2(x, trackLane.CustomMinimumSize.Y);
             trackLane.PixelsPerSecond = _pixelsPerSecond;
-            trackLane.QueueRedraw();
+            trackLane.SyncClips();
         }
         if (_mixTime != null)
         {
@@ -517,7 +459,7 @@ public partial class Main
             throw new InvalidOperationException("Audio tools are unavailable.");
         }
         MixProject snapshot = PlaybackMix();
-        if (!snapshot.AudibleTracks.Any(t => File.Exists(t.SourcePath)))
+        if (!snapshot.AudibleClips.Any(t => File.Exists(t.SourcePath)))
         {
             StopMix(false); Status("Add an available, unmuted track to play the mix.");
             return;
@@ -528,8 +470,8 @@ public partial class Main
         Dictionary<string, PcmSource> prepared = await _audio.PrepareAsync(snapshot, default(CancellationToken), includeMuted: true);
         if (version == _playVersion && !_shuttingDown)
         {
-            _prepared = prepared;
-            if (_soloTrackId is Guid soloId && !_mix.Tracks.Any(t => t.Id == soloId)) { StopMix(false); return; }
+            foreach (var (path, source) in prepared) _prepared[path] = source;
+            if (_soloTrackId is Guid soloId && !_mix.Tracks.Any(t => t.Id == soloId && (_soloClipId == null || t.Clips.Any(c => c.Id == _soloClipId)))) { StopMix(false); return; }
             var playback = PlaybackMix();
             if (_transport >= playback.TimelineDuration)
             {
@@ -551,7 +493,7 @@ public partial class Main
             RefreshAudibleLanes();
             _play.Text = "Ⅱ  Pause";
             FillMix();
-            Status(_soloTrackId is Guid trackId ? "Playing track · " + _mix.Tracks.First(t => t.Id == trackId).Name : playback.AudibleTracks.Any(t => !File.Exists(t.SourcePath)) ? "Playing mix · unavailable sources skipped" : "Playing mix · controls update live");
+            Status(_soloClipId is Guid clipId ? "Playing clip · " + _mix.Clips.First(c => c.Id == clipId).Name : _soloTrackId is Guid trackId ? "Playing track · " + _mix.Tracks.First(t => t.Id == trackId).Name : playback.AudibleClips.Any(t => !File.Exists(t.SourcePath)) ? "Playing mix · unavailable sources skipped" : "Playing mix · controls update live");
         }
     }
 
@@ -564,7 +506,7 @@ public partial class Main
         _mixPlayer?.Stop();
         _mixPlayback = null;
         _playing = false;
-        _soloTrackId = null; RefreshAudibleLanes();
+        _soloTrackId = null; _soloClipId = null; RefreshAudibleLanes();
         if (reset)
         {
             _transport = 0.0;
@@ -636,10 +578,10 @@ public partial class Main
             _ruler.Playhead = _transport;
             _ruler.QueueRedraw();
         }
-        foreach (TrackLane trackLane in _trackLanes)
+        foreach (TrackLane trackLane in _trackLanes.Concat(_newTrackLane == null ? Array.Empty<TrackLane>() : new[] { _newTrackLane }))
         {
             trackLane.Playhead = _transport;
-            trackLane.QueueRedraw();
+            trackLane.SyncClips();
         }
         if (_mixTime != null)
         {
@@ -654,7 +596,7 @@ public partial class Main
             Error("Wait for the current operation to finish.");
             return false;
         }
-        if (!mix.AudibleTracks.Any(t => t.Duration > 0))
+        if (!mix.AudibleClips.Any(t => t.Duration > 0))
         {
             Error("Add an unmuted sound before exporting.");
             return false;
@@ -671,7 +613,7 @@ public partial class Main
         {
             Name = "ExportFormat"
         };
-        format.AddItem("WAV · 24-bit PCM (lossless)");
+        format.AddItem("WAV · 32-bit float (lossless)");
         format.AddItem("OGG · Vorbis quality 6");
         vBoxContainer.AddChild(format, forceReadableName: false, InternalMode.Disabled);
         vBoxContainer.AddChild(Skin.Label("Mute, trim, pitch and volume envelopes are included.\nOriginal sound files are preserved.", 12, Skin.Muted), forceReadableName: false, InternalMode.Disabled);
@@ -715,9 +657,9 @@ public partial class Main
             ogg.HasValue ? ExportDestination.FileName(suggested, ogg.Value) : suggested, LastExportDirectory);
         const string formatOption = "Audio format";
         if (ogg is bool format)
-            dialog.AddFilter(format ? "*.ogg" : "*.wav", format ? "OGG · Vorbis quality 6" : "WAV · 24-bit PCM");
+            dialog.AddFilter(format ? "*.ogg" : "*.wav", format ? "OGG · Vorbis quality 6" : "WAV · 32-bit float");
         else
-            dialog.AddOption(formatOption, new[] { "WAV · 24-bit PCM", "OGG · Vorbis quality 6" }, 0);
+            dialog.AddOption(formatOption, new[] { "WAV · 32-bit float", "OGG · Vorbis quality 6" }, 0);
 
         ShowSaveDialog(dialog, path =>
         {

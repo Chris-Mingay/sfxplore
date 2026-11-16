@@ -58,6 +58,17 @@ public partial class BrowserTile : Control
         if (@event is InputEventMouseButton { Pressed: true } mouse && (mouse.ButtonIndex == MouseButton.Left || mouse.ButtonIndex == MouseButton.Right))
         { GrabFocus(); Clicked?.Invoke(this, mouse.ButtonIndex == MouseButton.Right); AcceptEvent(); }
     }
+    public override Variant _GetDragData(Vector2 position)
+    {
+        if (Entry.IsFolder || Entry.Sound == null) return default;
+        SetDragPreview(Skin.Label(Entry.Name, 14, Skin.Accent));
+        return MixDragData();
+    }
+    internal Variant MixDragData()
+    {
+        if (Entry.IsFolder || Entry.Sound == null) return default;
+        return new Godot.Collections.Dictionary { ["kind"] = "mix-sound", ["sound"] = Entry.Sound.Id, ["path"] = Entry.Sound.FullPath };
+    }
     public override void _Draw()
     {
         bool hover = GetLocalMousePosition().X >= 0 && GetLocalMousePosition().Y >= 0 && new Rect2(Vector2.Zero, Size).HasPoint(GetLocalMousePosition());
@@ -100,10 +111,15 @@ public partial class TimelineRuler : Control
     }
 }
 
-public partial class TrackLane : Control
+public partial class ClipView : Control
 {
-    public MixTrack Track { get; set; } = null!;
+    public MixClip ClipData { get; set; } = null!;
     public bool Audible { get; set; } = true;
+    public bool Selected { get; set; }
+    public Guid TrackId { get; set; }
+    public event Action<MixClip>? CandidateEdited;
+    public event Action? Clicked;
+    public event Action? EditCanceled;
     public float[] Peaks { get; set; } = Array.Empty<float>();
     public double PixelsPerSecond { get; set; } = 80;
     public double Playhead { get; set; }
@@ -114,7 +130,7 @@ public partial class TrackLane : Control
     public event Action? AuditionRequested;
     private enum Drag { None, Move, TrimLeft, TrimRight, Pitch, Volume, Start, In, Out, End }
     private Drag _drag;
-    private MixTrack? _before;
+    private MixClip? _before;
     private Vector2 _pointer;
     private bool _changed;
     private string _readout = "";
@@ -122,20 +138,20 @@ public partial class TrackLane : Control
     private float ClipTop => Expanded ? 38 : 19;
     private float Top => ClipTop + (Expanded ? 20 : 8);
     private float Bottom => Size.Y - (Expanded ? 34 : 32);
-    private bool CanEditVolume => Track.Volume != null || Track.Envelope.Count == 0;
-    private Rect2 Clip => new((float)(Track.Start * PixelsPerSecond), ClipTop, Math.Max(2, (float)(Track.Duration * PixelsPerSecond)), Size.Y - ClipTop - 16);
-    internal Vector2 PitchGrabPosition => new(Clip.GetCenter().X, PitchY(Track.Semitones));
-    internal Vector2 VolumeGrabPosition => new(Clip.Position.X + (float)(((Track.Volume?.HasIn == true ? Track.Volume.InEnd : 0) + (Track.Volume?.HasOut == true ? Track.Volume.OutStart : 1)) / 2) * Clip.Size.X, VolumeY(Track.Gain));
+    private bool CanEditVolume => ClipData.Volume != null || ClipData.Envelope.Count == 0;
+    internal Rect2 ClipBounds => new((float)(ClipData.Start * PixelsPerSecond), ClipTop, Math.Max(2, (float)(ClipData.Duration * PixelsPerSecond)), Size.Y - ClipTop - 16);
+    internal Vector2 PitchGrabPosition => new(ClipBounds.GetCenter().X, PitchY(ClipData.Semitones));
+    internal Vector2 VolumeGrabPosition => new(ClipBounds.Position.X + (float)(((ClipData.Volume?.HasIn == true ? ClipData.Volume.InEnd : 0) + (ClipData.Volume?.HasOut == true ? ClipData.Volume.OutStart : 1)) / 2) * ClipBounds.Size.X, VolumeY(ClipData.Gain));
     private float PitchY(double pitch) => Top + (float)((24 - pitch) / 48) * (Bottom - Top);
-    private float VolumeY(float gain) => Top + (float)((12 - TrackVolume.Decibels(gain)) / 72) * (Bottom - Top);
-    private float GainAt(float y) => TrackVolume.FromDecibels(12 - Math.Clamp((y - Top) / Math.Max(1, Bottom - Top), 0, 1) * 72);
-    private double SourceAt(float x) => Track.TrimStart + Math.Clamp((x - Clip.Position.X) / Clip.Size.X, 0, 1) * (Track.TrimEnd - Track.TrimStart);
-    internal Vector2[] VolumeHandlePositions => Track.Volume == null ? Array.Empty<Vector2>() : new[]
+    private float VolumeY(float gain) => Top + (float)((12 - ClipVolume.Decibels(gain)) / 72) * (Bottom - Top);
+    private float GainAt(float y) => ClipVolume.FromDecibels(12 - Math.Clamp((y - Top) / Math.Max(1, Bottom - Top), 0, 1) * 72);
+    private double SourceAt(float x) => ClipData.TrimStart + Math.Clamp((x - ClipBounds.Position.X) / ClipBounds.Size.X, 0, 1) * (ClipData.TrimEnd - ClipData.TrimStart);
+    internal Vector2[] VolumeHandlePositions => ClipData.Volume == null ? Array.Empty<Vector2>() : new[]
     {
-        new Vector2(Clip.Position.X, VolumeY(Track.Volume.StartGain)),
-        new Vector2(Clip.Position.X + (float)Track.Volume.InEnd * Clip.Size.X, VolumeY(Track.Gain)),
-        new Vector2(Clip.Position.X + (float)Track.Volume.OutStart * Clip.Size.X, VolumeY(Track.Gain)),
-        new Vector2(Clip.End.X, VolumeY(Track.Volume.EndGain))
+        new Vector2(ClipBounds.Position.X, VolumeY(ClipData.Volume.StartGain)),
+        new Vector2(ClipBounds.Position.X + (float)ClipData.Volume.InEnd * ClipBounds.Size.X, VolumeY(ClipData.Gain)),
+        new Vector2(ClipBounds.Position.X + (float)ClipData.Volume.OutStart * ClipBounds.Size.X, VolumeY(ClipData.Gain)),
+        new Vector2(ClipBounds.End.X, VolumeY(ClipData.Volume.EndGain))
     };
     public override void _Ready()
     {
@@ -146,7 +162,7 @@ public partial class TrackLane : Control
     }
     private Drag Hit(Vector2 p)
     {
-        var v = Track.Volume;
+        var v = ClipData.Volume;
         var handles = VolumeHandlePositions;
         // Distance first; stable ordering still gives each coincident handle its own side.
         if (v != null)
@@ -160,28 +176,29 @@ public partial class TrackLane : Control
         // Dedicated bottom grips leave the pitch and volume endpoints accessible.
         if (p.Y >= Bottom + 5 && p.Y <= Size.Y - 12)
         {
-            if (Math.Abs(p.X - Clip.Position.X) <= 9) return Drag.TrimLeft;
-            if (Math.Abs(p.X - Clip.End.X) <= 9) return Drag.TrimRight;
+            if (Math.Abs(p.X - ClipBounds.Position.X) <= 9) return Drag.TrimLeft;
+            if (Math.Abs(p.X - ClipBounds.End.X) <= 9) return Drag.TrimRight;
         }
-        if (!Clip.HasPoint(p)) return Drag.None;
-        float pitchDistance = Math.Abs(p.Y - PitchY(Track.Semitones));
-        float volumeDistance = CanEditVolume && (v?.HasIn != true || p.X >= handles[1].X) && (v?.HasOut != true || p.X <= handles[2].X) ? Math.Abs(p.Y - VolumeY(Track.Gain)) : float.PositiveInfinity;
+        if (p.X >= ClipBounds.Position.X && p.X <= ClipBounds.End.X && p.Y >= 0 && p.Y < ClipTop) return Drag.Move;
+        if (!ClipBounds.HasPoint(p)) return Drag.None;
+        float pitchDistance = Math.Abs(p.Y - PitchY(ClipData.Semitones));
+        float volumeDistance = CanEditVolume && (v?.HasIn != true || p.X >= handles[1].X) && (v?.HasOut != true || p.X <= handles[2].X) ? Math.Abs(p.Y - VolumeY(ClipData.Gain)) : float.PositiveInfinity;
         // When the bars coincide, their upper side controls pitch and lower side controls volume.
         if (pitchDistance <= 5 && volumeDistance <= 5)
-            return Math.Abs(pitchDistance - volumeDistance) < .01f ? (p.Y > PitchY(Track.Semitones) ? Drag.Volume : Drag.Pitch) : pitchDistance < volumeDistance ? Drag.Pitch : Drag.Volume;
+            return Math.Abs(pitchDistance - volumeDistance) < .01f ? (p.Y > PitchY(ClipData.Semitones) ? Drag.Volume : Drag.Pitch) : pitchDistance < volumeDistance ? Drag.Pitch : Drag.Volume;
         if (pitchDistance <= 5) return Drag.Pitch;
         if (volumeDistance <= 5) return Drag.Volume;
         return Drag.Move;
     }
     private string Describe(Drag kind) => kind switch
     {
-        Drag.Pitch => $"Pitch {Track.Semitones:+0.0;-0.0;0.0} st · {Track.Duration:0.000}s",
-        Drag.Start => $"Start {TrackVolume.Describe(Track.Volume!.StartGain)}",
-        Drag.End => $"End {TrackVolume.Describe(Track.Volume!.EndGain)}",
-        Drag.In => $"Target {TrackVolume.Describe(Track.Gain)} · ease in {Track.Volume!.InEnd * Track.Duration:0.000}s",
-        Drag.Out => $"Target {TrackVolume.Describe(Track.Gain)} · ease out {(1 - Track.Volume!.OutStart) * Track.Duration:0.000}s",
-        Drag.Volume => $"Volume {TrackVolume.Describe(Track.Gain)}",
-        Drag.TrimLeft or Drag.TrimRight => $"Trim · {Track.Duration:0.000}s",
+        Drag.Pitch => $"Pitch {ClipData.Semitones:+0.0;-0.0;0.0} st · {ClipData.Duration:0.000}s",
+        Drag.Start => $"Start {ClipVolume.Describe(ClipData.Volume!.StartGain)}",
+        Drag.End => $"End {ClipVolume.Describe(ClipData.Volume!.EndGain)}",
+        Drag.In => $"Target {ClipVolume.Describe(ClipData.Gain)} · ease in {ClipData.Volume!.InEnd * ClipData.Duration:0.000}s",
+        Drag.Out => $"Target {ClipVolume.Describe(ClipData.Gain)} · ease out {(1 - ClipData.Volume!.OutStart) * ClipData.Duration:0.000}s",
+        Drag.Volume => $"Volume {ClipVolume.Describe(ClipData.Gain)}",
+        Drag.TrimLeft or Drag.TrimRight => $"Trim · {ClipData.Duration:0.000}s",
         _ => "Drag clip to position · bottom corner grips trim · pink bar changes pitch"
     };
     public override void _GuiInput(InputEvent e)
@@ -193,13 +210,15 @@ public partial class TrackLane : Control
             _drag = Hit(mouse.Position);
             if (_drag == Drag.None) return;
             GrabFocus();
-            _pointer = mouse.Position; _before = Track.Clone(); _changed = false;
+            _pointer = mouse.Position; _before = ClipData.Clone(); _changed = false;
             _readout = Describe(_drag); QueueRedraw(); AcceptEvent();
         }
+        if (e is InputEventKey { Pressed: true, Keycode: Key.Escape }) { CancelGesture(); AcceptEvent(); return; }
         if (e is not InputEventMouseMotion motion) return;
         if (_drag == Drag.None) { _readout = Describe(Hit(motion.Position)); TooltipText = _readout; QueueRedraw(); return; }
+        if (_drag == Drag.Move) return; // Native drag-and-drop moves clips between lanes.
         var before = _before!;
-        var candidate = Track.Clone();
+        var candidate = before.Clone();
         double dx = (motion.Position.X - _pointer.X) / PixelsPerSecond;
         float dy = motion.Position.Y - _pointer.Y;
         switch (_drag)
@@ -222,43 +241,58 @@ public partial class TrackLane : Control
                 candidate.Gain = dy == 0 ? before.Gain : GainAt(VolumeY(before.Gain) + dy);
                 candidate.Volume!.OutStart = Math.Clamp(before.Volume!.OutStart + dx / Math.Max(1e-9, before.Duration), candidate.Volume.HasIn ? candidate.Volume.InEnd : 0, 1); break;
         }
-        if (!Same(candidate, Track))
+        if (!Same(candidate, ClipData))
         {
             if (!_changed) { EditStarted?.Invoke(); _changed = true; }
-            Track.Start = candidate.Start; Track.TrimStart = candidate.TrimStart; Track.TrimEnd = candidate.TrimEnd;
-            Track.Semitones = candidate.Semitones; Track.Gain = candidate.Gain; Track.Volume = candidate.Volume;
+            CandidateEdited?.Invoke(candidate);
             Edited?.Invoke();
         }
         _readout = Describe(_drag); QueueRedraw(); AcceptEvent();
     }
-    private static bool Same(MixTrack a, MixTrack b) => System.Text.Json.JsonSerializer.Serialize(a) == System.Text.Json.JsonSerializer.Serialize(b);
+    private static bool Same(MixClip a, MixClip b) => System.Text.Json.JsonSerializer.Serialize(a) == System.Text.Json.JsonSerializer.Serialize(b);
     private void FinishDrag(bool audition = true)
     {
-        bool changed = _changed && !Same(_before!, Track);
+        bool changed = _changed && !Same(_before!, ClipData);
         var completedDrag = _drag;
         _drag = Drag.None; _before = null; _readout = ""; QueueRedraw();
         if (_changed) EditFinished?.Invoke(changed);
+        else if (audition) Clicked?.Invoke();
         _changed = false;
         if (audition && changed && completedDrag is Drag.Pitch or Drag.Volume or Drag.Start or Drag.In or Drag.Out or Drag.End) AuditionRequested?.Invoke();
     }
-    private void WindowFocusLost() { if (_drag != Drag.None) FinishDrag(false); }
+    internal void CancelGesture()
+    {
+        if (_drag == Drag.None) return;
+        _drag = Drag.None; _before = null; _readout = "";
+        if (_changed) EditCanceled?.Invoke();
+        _changed = false; QueueRedraw();
+    }
+    private void WindowFocusLost() => CancelGesture();
+    public override bool _HasPoint(Vector2 point) => new Rect2(ClipBounds.Position.X - 9, 0, ClipBounds.Size.X + 18, Size.Y).HasPoint(point);
+    public override Variant _GetDragData(Vector2 position)
+    {
+        if (_drag != Drag.Move) return default;
+        double offset = _pointer.X / PixelsPerSecond - ClipData.Start;
+        _drag = Drag.None; _before = null; _readout = "";
+        SetDragPreview(Skin.Label(ClipData.Name, 14, Skin.Accent));
+        return new Godot.Collections.Dictionary { ["kind"] = "mix-clip", ["track"] = TrackId.ToString(), ["clip"] = ClipData.Id.ToString(), ["offset"] = offset };
+    }
+    public override bool _CanDropData(Vector2 position, Variant data) => ((TrackLane)GetParent())._CanDropData(position, data);
+    public override void _DropData(Vector2 position, Variant data) => ((TrackLane)GetParent())._DropData(position, data);
     public override void _ExitTree() => GetWindow().FocusExited -= WindowFocusLost;
     public override void _Draw()
     {
-        DrawRect(new(Vector2.Zero, Size), Skin.Background);
         float visibleLeft = Math.Max(0, -GlobalPosition.X), visibleRight = Math.Min(Size.X, GetViewportRect().Size.X - GlobalPosition.X);
-        double step = TimelineRuler.TickStep(PixelsPerSecond);
-        for (double s = Math.Floor(visibleLeft / PixelsPerSecond / step) * step; s * PixelsPerSecond < visibleRight; s += step) DrawLine(new((float)(s * PixelsPerSecond), 0), new((float)(s * PixelsPerSecond), Size.Y), new Color("303947"));
-        var clip = Clip;
-        DrawStyleBox(Skin.Box(!Audible ? new("424b58") : new("325875"), 4, Skin.Border), clip);
+        var clip = ClipBounds;
+        DrawStyleBox(Skin.Box(!Audible ? new("424b58") : new("325875"), 4, Selected ? Skin.Accent : Skin.Border), clip);
         float center = (Top + Bottom) / 2;
         for (float x = Math.Max(clip.Position.X + 1, visibleLeft); x < Math.Min(clip.End.X, visibleRight); x += 2)
         {
             double seconds = SourceAt(x);
             if (Peaks.Length > 0)
             {
-                int i = Math.Clamp((int)(seconds / Math.Max(.0001, Track.SourceDuration) * Peaks.Length), 0, Peaks.Length - 1);
-                float h = Math.Min(.95f, Peaks[i] * TrackVolume.Gain(Track, seconds)) * (Bottom - Top) / 2;
+                int i = Math.Clamp((int)(seconds / Math.Max(.0001, ClipData.SourceDuration) * Peaks.Length), 0, Peaks.Length - 1);
+                float h = Math.Min(.95f, Peaks[i] * ClipVolume.Gain(ClipData, seconds)) * (Bottom - Top) / 2;
                 DrawLine(new(x, center - h), new(x, center + h), !Audible ? Skin.Muted : new("8ab9d5"));
             }
         }
@@ -266,16 +300,16 @@ public partial class TrackLane : Control
         float left = Math.Max(clip.Position.X, visibleLeft), right = Math.Min(clip.End.X, visibleRight);
         if (right >= left)
         {
-            Vector2 previous = new(left, VolumeY(TrackVolume.Gain(Track, SourceAt(left))));
+            Vector2 previous = new(left, VolumeY(ClipVolume.Gain(ClipData, SourceAt(left))));
             for (float x = left + 1; x <= right + 1; x += 2)
             {
                 float end = Math.Min(x, right);
-                var next = new Vector2(end, VolumeY(TrackVolume.Gain(Track, SourceAt(end))));
+                var next = new Vector2(end, VolumeY(ClipVolume.Gain(ClipData, SourceAt(end))));
                 DrawLine(previous, next, Yellow, 2, true); previous = next;
             }
         }
-        DrawLine(new(clip.Position.X, PitchY(Track.Semitones)), new(clip.End.X, PitchY(Track.Semitones)), Pink, 3, true);
-        var v = Track.Volume; var points = VolumeHandlePositions;
+        DrawLine(new(clip.Position.X, PitchY(ClipData.Semitones)), new(clip.End.X, PitchY(ClipData.Semitones)), Pink, 3, true);
+        var v = ClipData.Volume; var points = VolumeHandlePositions;
         if (v != null)
         {
             if (v.HasIn) { DrawCircle(points[0], 6, Orange); DrawCircle(points[1], 6, Orange); }
@@ -286,7 +320,7 @@ public partial class TrackLane : Control
             DrawRect(new(x - 5, Bottom + 6, 10, 10), Skin.Text);
             DrawLine(new(x, Bottom + 8), new(x, Bottom + 14), Skin.Background, 2);
         }
-        DrawString(ThemeDB.FallbackFont, new(Math.Max(clip.Position.X + 4, visibleLeft + 4), Expanded ? 21 : 14), _readout, fontSize: 11, modulate: Skin.Text);
+        DrawString(ThemeDB.FallbackFont, new(Math.Max(clip.Position.X + 4, visibleLeft + 4), Expanded ? 21 : 14), string.IsNullOrEmpty(_readout) ? ClipData.Name : _readout, width: Math.Max(0, clip.End.X - Math.Max(clip.Position.X + 4, visibleLeft + 4)), fontSize: 11, modulate: Skin.Text);
         float playhead = (float)(Playhead * PixelsPerSecond); DrawLine(new(playhead, 0), new(playhead, Size.Y), new Color("f9d780"), 1.5f);
     }
 }

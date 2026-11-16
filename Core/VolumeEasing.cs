@@ -28,7 +28,7 @@ public sealed class VolumeEasing
     public bool HasOut => Mode is VolumeMode.EaseOut or VolumeMode.Both;
 }
 
-public static class TrackVolume
+public static class ClipVolume
 {
     public static readonly float MaximumGain = (float)Math.Pow(10, 12.0 / 20);
     public static double Decibels(float gain) => gain <= 0 ? -60 : Math.Clamp(20 * Math.Log10(gain), -60, 12);
@@ -57,8 +57,8 @@ public static class TrackVolume
         };
     }
 
-    // Complete track gain, shared by the waveform and both rendering paths.
-    public static float Gain(MixTrack track, double sourceSeconds)
+    // Clip gain, shared by the waveform and both rendering paths.
+    public static float Gain(MixClip track, double sourceSeconds)
     {
         var v = track.Volume;
         if (v == null) return track.Gain * MixRenderer.EnvelopeGain(track.Envelope, sourceSeconds);
